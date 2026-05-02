@@ -20,6 +20,7 @@ __pycache__/
 models--*/
 snapshots/
 .no_exist/
+backend/clip_model/
 
 # WiFi credentials (copy wifi_config.h.example to wifi_config.h)
 esp32/wifi_config.h

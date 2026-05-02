@@ -13,5 +13,5 @@ Pillow>=9.0.0
 opencv-python>=4.8.0
 numpy>=1.24.0
 
-# Network (UDP broadcast auto-discovery)
-netifaces>=0.11.0
+# Network (UDP broadcast auto-discovery - optional, requires VC++ Build Tools)
+# netifaces>=0.11.0

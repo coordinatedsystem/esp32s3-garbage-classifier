@@ -1,6 +1,7 @@
 import os
 
-# 强制本地加载，不联网
+# 本地加载（模型已下载到 backend/clip_model/）
+# 首次运行需注释下面两行以下载模型
 os.environ["HF_HUB_OFFLINE"] = "1"
 os.environ["TRANSFORMERS_OFFLINE"] = "1"
 # 加速：CPU性能优化
@@ -62,7 +63,8 @@ LABEL_MAP = {
 }
 
 TEXT_PROMPTS = list(LABEL_MAP.keys())
-MODEL_NAME = os.path.join(os.path.dirname(__file__), "clip_model")
+MODEL_NAME = "openai/clip-vit-base-patch32"
+MODEL_DIR = os.path.join(os.path.dirname(__file__), "clip_model")
 
 # 仅用于CLIP识别结果的垃圾分类映射，未覆盖项默认归为其他垃圾
 WASTE_CATEGORY_MAP = {
@@ -110,10 +112,18 @@ torch.set_num_threads(4)
 torch.set_num_interop_threads(1)
 torch.set_grad_enabled(False)
 
-# 加载模型（纯CPU，无编译）
+# 下载/加载模型（纯CPU，无编译）
 print("正在加载CLIP模型...")
-model = CLIPModel.from_pretrained(MODEL_NAME, local_files_only=True).to(device).eval()
-processor = CLIPProcessor.from_pretrained(MODEL_NAME, local_files_only=True, use_fast=False)
+if os.path.exists(os.path.join(MODEL_DIR, "config.json")):
+    model = CLIPModel.from_pretrained(MODEL_DIR).to(device).eval()
+    processor = CLIPProcessor.from_pretrained(MODEL_DIR, use_fast=False)
+else:
+    print("  首次运行，正在下载CLIP模型 (~1.2GB)...")
+    model = CLIPModel.from_pretrained(MODEL_NAME).to(device).eval()
+    processor = CLIPProcessor.from_pretrained(MODEL_NAME, use_fast=False)
+    model.save_pretrained(MODEL_DIR)
+    processor.save_pretrained(MODEL_DIR)
+    print("  模型已保存到", MODEL_DIR)
 
 # 🔥 最大提速：文本预编码（只处理一次，永久缓存）
 print("正在预编码文本标签...")
