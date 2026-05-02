@@ -1,0 +1,39 @@
+# Python virtual environment
+.venv/
+venv/
+env/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# HuggingFace model cache (download via download_models.py)
+models--*/
+snapshots/
+.no_exist/
+
+# WiFi credentials (copy wifi_config.h.example to wifi_config.h)
+esp32/wifi_config.h
+wifi_config.h
+
+# OS files
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Legacy (to be removed)
+backend/yolo26/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/

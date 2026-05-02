@@ -1,0 +1,17 @@
+# Web server
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+python-multipart>=0.0.6
+
+# ML / inference
+torch>=2.0.0
+transformers>=4.30.0
+ultralytics>=8.0.0
+
+# Image processing
+Pillow>=9.0.0
+opencv-python>=4.8.0
+numpy>=1.24.0
+
+# Network (UDP broadcast auto-discovery)
+netifaces>=0.11.0

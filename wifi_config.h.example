@@ -1,0 +1,12 @@
+#ifndef WIFI_CONFIG_H
+#define WIFI_CONFIG_H
+
+// 复制此文件为 wifi_config.h 并填入你的信息
+// Copy this file to wifi_config.h and fill in your settings
+
+const char* WIFI_SSID = "your_wifi_ssid";
+const char* WIFI_PASS = "your_wifi_password";
+const char* SERVER_HOST = "192.168.x.x";
+const int   SERVER_PORT = 8085;
+
+#endif
