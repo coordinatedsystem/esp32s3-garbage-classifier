@@ -73,6 +73,7 @@ Adafruit_ST7735 tft = Adafruit_ST7735(PIN_CS, PIN_DC, PIN_MOSI, PIN_SCLK, PIN_RS
 // ==============================
 enum State { ST_WIFI, ST_READY, ST_CAPTURE, ST_UPLOAD, ST_RESULT, ST_ERROR };
 State state = ST_WIFI;
+unsigned long resultShownMs = 0;  // 进入 ST_RESULT 的时间，用于冷却控制
 
 // ==============================
 // 屏幕小工具
@@ -207,7 +208,7 @@ bool cameraInit() {
   config.pixel_format  = PIXFORMAT_YUV422;  // 传感器原生色彩空间，无 RGB565 字节序问题
   config.frame_size    = FRAMESIZE_QVGA;     // 320x240
   config.jpeg_quality  = 10;
-  config.fb_count      = 2;
+  config.fb_count      = 1;   // 单缓冲，减轻 PSRAM 碎片化
   config.fb_location   = CAMERA_FB_IN_PSRAM;
   config.grab_mode     = CAMERA_GRAB_WHEN_EMPTY;
 
@@ -256,6 +257,8 @@ bool serverHealth() {
 // OV3660 YUV422 -> fmt2jpg 转 JPEG
 // ==============================
 bool captureAndClassify() {
+  unsigned long t0 = millis();  // 计时起点
+
   cls();
   bar("Capturing...");
   txt(0, 50, 2, C_WHITE, "Photo...");
@@ -271,7 +274,7 @@ bool captureAndClassify() {
   size_t   jpgLen = 0;
 
   bool ok = fmt2jpg(fb->buf, fb->len, fb->width, fb->height,
-                    PIXFORMAT_YUV422, 80, &jpgBuf, &jpgLen);
+                    PIXFORMAT_YUV422, 60, &jpgBuf, &jpgLen);
   esp_camera_fb_return(fb);
 
   if (!ok || !jpgBuf) {
@@ -280,60 +283,54 @@ bool captureAndClassify() {
     return false;
   }
 
+  unsigned long t1 = millis();  // 转换完成
+
   tft.fillRect(0, 48, 128, 20, C_BLACK);
   txt(0, 50, 1, C_GREEN, "Convert OK");
+  num(0, 65, 1, C_DARKGREY, (int)jpgLen);
+  txt(35, 65, 1, C_DARKGREY, "B");
 
-  // 上传
+  // 上传 — HTTPClient 管理连接，end() 可靠释放 socket
   bar("Classifying...");
-
-  WiFiClient client;
-  if (!client.connect(SERVER_HOST, SERVER_PORT)) {
-    free(jpgBuf);
-    err("Server fail");
-    return false;
-  }
 
   String boundary = "----ESP32Boundary";
   String head = "--" + boundary + "\r\n";
   head += "Content-Disposition: form-data; name=\"file\"; filename=\"cap.jpg\"\r\n";
   head += "Content-Type: image/jpeg\r\n\r\n";
   String foot = "\r\n--" + boundary + "--\r\n";
-  size_t total = head.length() + jpgLen + foot.length();
+  size_t bodySize = head.length() + jpgLen + foot.length();
 
-  String classifyQs = "/classify?source=esp32&ip=" + WiFi.localIP().toString();
-  client.print("POST " + classifyQs + " HTTP/1.1\r\n");
-  client.print("Host: " + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "\r\n");
-  client.print("Content-Type: multipart/form-data; boundary=" + boundary + "\r\n");
-  client.print("Content-Length: " + String(total) + "\r\n");
-  client.print("Connection: close\r\n\r\n");
+  uint8_t *bodyBuf = (uint8_t *)malloc(bodySize);
+  if (!bodyBuf) { free(jpgBuf); err("No memory"); return false; }
+  memcpy(bodyBuf, head.c_str(), head.length());
+  memcpy(bodyBuf + head.length(), jpgBuf, jpgLen);
+  memcpy(bodyBuf + head.length() + jpgLen, foot.c_str(), foot.length());
 
-  client.print(head);
-  client.write(jpgBuf, jpgLen);
-  client.print(foot);
+  HTTPClient http;
+  String url = "http://" + String(SERVER_HOST) + ":" + String(SERVER_PORT)
+             + "/classify?source=esp32&ip=" + WiFi.localIP().toString();
+  http.begin(url);
+  http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
+  http.setTimeout(HTTP_TIMEOUT_MS);
 
-  // 读响应
-  unsigned long start = millis();
-  while (client.connected() && !client.available()) {
-    if (millis() - start > HTTP_TIMEOUT_MS) { client.stop(); free(jpgBuf); err("Timeout"); return false; }
-    delay(10);
+  int code = http.POST(bodyBuf, bodySize);
+  free(bodyBuf);
+
+  if (code != 200) {
+    http.end();
+    free(jpgBuf);
+    err("HTTP fail");
+    return false;
   }
 
-  String body = "";
-  bool hdDone = false;
-  start = millis();
-  while (client.connected() || client.available()) {
-    if (millis() - start > HTTP_TIMEOUT_MS) break;
-    if (client.available()) {
-      String line = client.readStringUntil('\n');
-      if (!hdDone) { if (line == "\r" || line.length() <= 1) hdDone = true; }
-      else body += line;
-    }
-  }
-  client.stop();
+  String body = http.getString();
+  http.end();
+
+  unsigned long t2 = millis();  // 上传+服务器完成
 
   // 解析
   DynamicJsonDocument doc(4096);
-  if (deserializeJson(doc, body)) { free(jpgBuf); err("JSON error"); return false; }
+  if (body.length() == 0 || deserializeJson(doc, body)) { free(jpgBuf); err("JSON error"); return false; }
 
   String itemEn = doc["result"]["item_label"] | "?";
   float  conf   = doc["result"]["confidence"] | 0.0f;
@@ -375,42 +372,21 @@ bool captureAndClassify() {
   else
     txt(0, 112, 1, C_RED, "LOW confidence");
 
-  txt(0, 128, 1, C_DARKGREY, "Press BOOT");
-  for (int i = 0; i < 3; i++)
-    tft.fillCircle(100 + i * 10, 134, 3, C_DARKGREY);
+  int convMs  = (int)(t1 - t0);     // fmt2jpg 耗时
+  int uploadMs = (int)(t2 - t1);     // 上传+服务器耗时
+  int totalMs  = (int)(t2 - t0);     // 总耗时
 
-  // 上传到硬件采集端点（后台发送，不阻塞）
-  {
-    WiFiClient hwClient;
-    if (hwClient.connect(SERVER_HOST, SERVER_PORT)) {
-      String hwBoundary = "----ESP32HW";
-      String hwHead = "--" + hwBoundary + "\r\n";
-      hwHead += "Content-Disposition: form-data; name=\"file\"; filename=\"cap.jpg\"\r\n";
-      hwHead += "Content-Type: image/jpeg\r\n\r\n";
-      String hwFoot = "\r\n--" + hwBoundary + "--\r\n";
-      String ip = WiFi.localIP().toString();
-      String qs = "/hardware/capture?device_id=ESP32-S3&firmware_version="
-                  + String(FIRMWARE_VERSION) + "&ip_address=" + ip;
-      size_t hwTotal = hwHead.length() + jpgLen + hwFoot.length();
+  char buf[24];
+  snprintf(buf, sizeof(buf), "Cv %d.%d U %d.%d",
+           convMs / 1000, (convMs % 1000) / 100,
+           uploadMs / 1000, (uploadMs % 1000) / 100);
+  txt(0, 122, 1, C_DARKGREY, buf);
 
-      hwClient.print("POST " + qs + " HTTP/1.1\r\n");
-      hwClient.print("Host: " + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "\r\n");
-      hwClient.print("Content-Type: multipart/form-data; boundary=" + hwBoundary + "\r\n");
-      hwClient.print("Content-Length: " + String(hwTotal) + "\r\n");
-      hwClient.print("Connection: close\r\n\r\n");
-      hwClient.print(hwHead);
-      hwClient.write(jpgBuf, jpgLen);
-      hwClient.print(hwFoot);
+  snprintf(buf, sizeof(buf), "T %d.%ds BOOT",
+           totalMs / 1000, (totalMs % 1000) / 100);
+  txt(0, 134, 1, C_DARKGREY, buf);
 
-      unsigned long hwStart = millis();
-      while (hwClient.connected() && millis() - hwStart < 5000) {
-        if (hwClient.available()) { while (hwClient.available()) hwClient.read(); break; }
-        delay(10);
-      }
-      hwClient.stop();
-    }
-  }
-
+  // 硬件采集已在 /classify?source=esp32 中自动处理，无需额外请求
   free(jpgBuf);
   return true;
 }
@@ -499,17 +475,21 @@ void loop() {
 
     case ST_CAPTURE:
       if (!captureAndClassify()) state = ST_ERROR;
-      else state = ST_RESULT;
+      else { state = ST_RESULT; resultShownMs = millis(); }
       break;
 
     case ST_RESULT:
-      // 结果显示一段时间后回到就绪
-      // 或按 BOOT 立即重拍
-      if (digitalRead(PIN_BOOT) == LOW) {
-        delay(50);
+      // 12s 后自动回到就绪；3s 冷却期内忽略 BOOT，避免 WiFi socket 耗尽
+      if (millis() - resultShownMs > 12000) {
+        drawReady();
+        state = ST_READY;
+      } else if (millis() - resultShownMs > 3000) {
         if (digitalRead(PIN_BOOT) == LOW) {
-          state = ST_CAPTURE;
-          while (digitalRead(PIN_BOOT) == LOW) delay(10);
+          delay(50);
+          if (digitalRead(PIN_BOOT) == LOW) {
+            state = ST_CAPTURE;
+            while (digitalRead(PIN_BOOT) == LOW) delay(10);
+          }
         }
       }
       break;
