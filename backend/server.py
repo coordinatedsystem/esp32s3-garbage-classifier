@@ -14,8 +14,14 @@ import torch
 import io
 import numpy as np
 import traceback
-from fastapi import FastAPI, UploadFile, File, HTTPException
+import threading
+import time
+import base64
+from datetime import datetime, timezone
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, Response
 from transformers import CLIPProcessor, CLIPModel
 from ultralytics import YOLO
 
@@ -102,6 +108,57 @@ def 获取垃圾分类(item_label_zh: str):
         return "hazardous", "有害垃圾"
     return "other", "其他垃圾"
 
+
+# ===================== 共享状态 (线程安全) =====================
+state_lock = threading.Lock()
+server_start_time = time.time()
+
+hardware_state = {
+    "online": False,
+    "last_capture": None,
+    "ip_address": None,
+    "capture_count": 0,
+    "device_id": "ESP32-S3",
+    "firmware_version": None
+}
+last_capture_image = None  # raw JPEG bytes
+server_history = []
+HISTORY_MAX = 50
+
+
+def _make_thumbnail(image_data: bytes, max_edge: int = 320) -> str:
+    """将图片转为缩略图 base64 data URL"""
+    try:
+        img = Image.open(io.BytesIO(image_data)).convert("RGB")
+        w, h = img.size
+        longest = max(w, h)
+        if longest > max_edge:
+            scale = max_edge / float(longest)
+            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.BILINEAR)
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=60)
+        b64 = base64.b64encode(buf.getvalue()).decode()
+        return f"data:image/jpeg;base64,{b64}"
+    except Exception:
+        return None
+
+
+def _add_history(mode: str, data: dict, image_data: bytes):
+    """线程安全地添加历史记录"""
+    thumb = _make_thumbnail(image_data)
+    entry = {
+        "id": str(int(time.time() * 1000)),
+        "mode": mode,
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "data": data,
+        "imageUrl": thumb
+    }
+    with state_lock:
+        server_history.insert(0, entry)
+        if len(server_history) > HISTORY_MAX:
+            server_history[:] = server_history[:HISTORY_MAX]
+
+
 # ===================== FastAPI 初始化 =====================
 app = FastAPI(title="物品识别API", version="1.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
@@ -152,10 +209,25 @@ def 缩放到最大边(image: Image.Image, max_edge: int = 1280) -> Image.Image:
 
 # ===================== 识别接口（稳定无报错） =====================
 @app.post("/classify")
-async def classify_image(file: UploadFile = File(...)):
+async def classify_image(file: UploadFile = File(...), source: str = Query("web"), ip: str = Query("")):
     try:
-        # 读取图片
+        # 读取图片（只能读一次）
         image_data = await file.read()
+        print(f"[classify] source={source}, ip={ip}, image_size={len(image_data)}")
+
+        # 如果是 ESP32 发来的请求，标记硬件在线
+        if source == "esp32":
+            global last_capture_image
+            last_capture_image = image_data
+            with state_lock:
+                hardware_state["online"] = True
+                hardware_state["last_capture"] = datetime.now(timezone.utc).isoformat()
+                hardware_state["ip_address"] = ip or hardware_state.get("ip_address", "")
+                hardware_state["capture_count"] += 1
+                hardware_state["device_id"] = "ESP32-S3"
+                hardware_state["firmware_version"] = hardware_state.get("firmware_version") or "1.0.0"
+            print(f"[硬件] ESP32 已上线 ip={ip} captures={hardware_state['capture_count']}")
+
         image = Image.open(io.BytesIO(image_data)).convert("RGB")
         image = 缩放到最大边(image, 1280)
 
@@ -184,17 +256,22 @@ async def classify_image(file: UploadFile = File(...)):
         best_idx = sorted_idx[0]
         best_item_zh = LABEL_MAP[TEXT_PROMPTS[best_idx]]
         waste_category, waste_category_zh = 获取垃圾分类(best_item_zh)
+        result_data = {
+            "waste_category": waste_category,
+            "waste_category_zh": waste_category_zh,
+            "item_label": TEXT_PROMPTS[best_idx],
+            "item_label_zh": best_item_zh,
+            "confidence": float(probs[best_idx]),
+            "tip": "请将垃圾投放到对应类别的收集容器中",
+            "top3": top3_list
+        }
+
+        # 写入历史
+        _add_history("classify", result_data, image_data)
+
         return {
             "success": True,
-            "result": {
-                "waste_category": waste_category,
-                "waste_category_zh": waste_category_zh,
-                "item_label": TEXT_PROMPTS[best_idx],
-                "item_label_zh": best_item_zh,
-                "confidence": float(probs[best_idx]),
-                "tip": "请将垃圾投放到对应类别的收集容器中",
-                "top3": top3_list
-            },
+            "result": result_data,
             "message": f"识别结果：{LABEL_MAP[TEXT_PROMPTS[best_idx]]} 置信度：{probs[best_idx] * 100:.1f}%"
         }
 
@@ -205,7 +282,19 @@ async def classify_image(file: UploadFile = File(...)):
 
 @app.get("/health")
 async def health():
-    return {"status": "healthy"}
+    uptime = time.time() - server_start_time
+    with state_lock:
+        hw_online = hardware_state["online"]
+        capture_count = hardware_state["capture_count"]
+    return {
+        "status": "healthy",
+        "uptime_seconds": round(uptime, 1),
+        "models_loaded": True,
+        "hardware_online": hw_online,
+        "hardware_captures": capture_count,
+        "device": device,
+        "clip_labels": len(TEXT_PROMPTS)
+    }
 
 
 @app.post("/detect")
@@ -273,21 +362,161 @@ async def detect_image(file: UploadFile = File(...)):
             }
 
         top1 = detections[0]
+        result_data = {
+            "detected": True,
+            "count": len(detections),
+            "item_label": top1["class_name"],
+            "confidence": top1["confidence"],
+            "top1": top1,
+            "detections": detections
+        }
+
+        # 写入历史
+        _add_history("detect", result_data, image_data)
+
         return {
             "success": True,
-            "result": {
-                "detected": True,
-                "count": len(detections),
-                "item_label": top1["class_name"],
-                "confidence": top1["confidence"],
-                "top1": top1,
-                "detections": detections
-            },
+            "result": result_data,
             "message": f"检测到 {len(detections)} 个目标，最高置信度类别：{top1['class_name']}"
         }
     except Exception as e:
         print(f"[错误] {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"检测失败：{str(e)}")
+
+
+# ===================== 模型信息接口 =====================
+@app.get("/models")
+async def get_models():
+    yolo_names = yolo_model.names if yolo_model else {}
+    yolo_labels = list(yolo_names.values()) if isinstance(yolo_names, dict) else [str(i) for i in range(len(yolo_names))]
+    return {
+        "models": [
+            {
+                "id": "classify",
+                "name": "CLIP ViT-B/32",
+                "type": "classify",
+                "description": "Zero-shot image classification — identifies objects and maps to waste categories.",
+                "labels_count": len(TEXT_PROMPTS),
+                "labels": TEXT_PROMPTS[:20]
+            },
+            {
+                "id": "detect",
+                "name": "YOLO exp-22",
+                "type": "detect",
+                "description": "Custom-trained object detection — locates and identifies objects with bounding boxes.",
+                "labels_count": len(yolo_labels),
+                "labels": yolo_labels[:20]
+            }
+        ]
+    }
+
+
+# ===================== 历史记录接口 =====================
+@app.get("/history")
+async def get_history(page: int = Query(1, ge=1), limit: int = Query(20, ge=1, le=100)):
+    with state_lock:
+        total = len(server_history)
+        start = (page - 1) * limit
+        end = start + limit
+        items = server_history[start:end]
+    return {
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "items": items
+    }
+
+
+@app.delete("/history")
+async def clear_history():
+    with state_lock:
+        server_history.clear()
+    return {"success": True, "message": "History cleared"}
+
+
+# ===================== 硬件接口 =====================
+@app.post("/hardware/capture")
+async def hardware_capture(
+    file: UploadFile = File(...),
+    device_id: str = Query("ESP32-S3"),
+    firmware_version: str = Query("1.0.0"),
+    ip_address: str = Query("unknown")
+):
+    """ESP32-S3 上传采集图片"""
+    global last_capture_image
+    try:
+        image_data = await file.read()
+
+        with state_lock:
+            hardware_state["online"] = True
+            hardware_state["last_capture"] = datetime.now(timezone.utc).isoformat()
+            hardware_state["ip_address"] = ip_address
+            hardware_state["capture_count"] += 1
+            hardware_state["device_id"] = device_id
+            hardware_state["firmware_version"] = firmware_version
+
+        last_capture_image = image_data
+
+        # 写入历史（标记为硬件采集）
+        thumb = _make_thumbnail(image_data)
+        entry = {
+            "id": f"hw_{int(time.time() * 1000)}",
+            "mode": "hardware",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "data": {
+                "source": "hardware",
+                "device_id": device_id,
+                "ip_address": ip_address
+            },
+            "imageUrl": thumb
+        }
+        with state_lock:
+            server_history.insert(0, entry)
+            if len(server_history) > HISTORY_MAX:
+                server_history[:] = server_history[:HISTORY_MAX]
+
+        return {"success": True, "message": "Image received"}
+    except Exception as e:
+        print(f"[硬件错误] {str(e)}\n{traceback.format_exc()}")
+        raise HTTPException(status_code=500, detail=f"硬件上传失败：{str(e)}")
+
+
+@app.get("/hardware/image")
+async def hardware_image():
+    """获取最后一次硬件采集的图片"""
+    if last_capture_image is None:
+        raise HTTPException(status_code=404, detail="No hardware image available")
+    return Response(content=last_capture_image, media_type="image/jpeg")
+
+
+@app.get("/hardware/status")
+async def hardware_status():
+    """获取硬件连接状态"""
+    with state_lock:
+        status = dict(hardware_state)
+    return status
+
+
+# ===================== 前端静态文件 =====================
+FRONTEND_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
+FRONTEND_DIR = os.path.abspath(FRONTEND_DIR)
+
+if os.path.exists(FRONTEND_DIR):
+    @app.get("/app/{full_path:path}")
+    async def spa_fallback(full_path: str = ""):
+        index_path = os.path.join(FRONTEND_DIR, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return {"error": "frontend not built — run: cd frontend && npm run build"}
+
+    @app.get("/app")
+    async def spa_root():
+        index_path = os.path.join(FRONTEND_DIR, "index.html")
+        if os.path.exists(index_path):
+            return FileResponse(index_path)
+        return {"error": "frontend not built — run: cd frontend && npm run build"}
+
+    app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIR, "assets")), name="assets")
 
 
 # ===================== 启动服务 =====================

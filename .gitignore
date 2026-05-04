@@ -25,6 +25,7 @@ backend/clip_model/
 # WiFi credentials (copy wifi_config.h.example to wifi_config.h)
 esp32/wifi_config.h
 wifi_config.h
+firmware/esp32s3_garbage_classifier/wifi_config.h
 
 # OS files
 .DS_Store
@@ -37,4 +38,14 @@ backend/yolo26/
 # Build artifacts
 build/
 dist/
+frontend/dist/
+frontend/node_modules/
 *.egg-info/
+
+# Downloaded models (too large for git)
+backend/clip_model/
+backend/exp-22.pt
+backend/yolov8n.pt
+
+# Claude Code
+.claude/
