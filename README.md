@@ -165,6 +165,15 @@ const int   SERVER_PORT   = 8085;
 
 ## 变更日志
 
+### v2.0.1
+- 分阶段计时显示（转换/上传+推理/总耗时），便于诊断瓶颈
+- HTTPClient 替代原始 WiFiClient，可靠管理 socket 生命周期
+- 结果页 3 秒冷却期，防止快速连拍导致 WiFi socket 耗尽
+- 结果页 12 秒自动返回就绪画面
+- 单帧缓冲 (fb_count=1) 减轻 PSRAM 碎片化
+- JPEG 质量下调至 60，加快传输速度
+- 移除冗余 `/hardware/capture` 请求，后端由 `/classify?source=esp32` 一并处理
+
 ### v2.0.0
 - OV3660 摄像头使用 YUV422 原生格式，解决 RGB565 颜色错误
 - 新增 React 前端仪表板（7 个功能模块，中文界面）
