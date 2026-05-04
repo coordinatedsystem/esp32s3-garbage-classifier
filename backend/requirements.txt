@@ -1,17 +1,14 @@
 # Web server
-fastapi>=0.100.0
-uvicorn[standard]>=0.23.0
-python-multipart>=0.0.6
+fastapi==0.136.1
+uvicorn[standard]==0.46.0
+python-multipart==0.0.27
 
 # ML / inference
-torch>=2.0.0
-transformers>=4.30.0
-ultralytics>=8.0.0
+torch==2.5.1
+transformers==4.46.0
+ultralytics==8.4.46
 
 # Image processing
-Pillow>=9.0.0
-opencv-python>=4.8.0
-numpy>=1.24.0
-
-# Network (UDP broadcast auto-discovery - optional, requires VC++ Build Tools)
-# netifaces>=0.11.0
+Pillow==12.2.0
+opencv-python==4.13.0.92
+numpy==2.4.4
