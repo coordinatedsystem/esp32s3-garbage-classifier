@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Trash, Leaf, Recycle, Warning, Flask } from '@phosphor-icons/react'
+import { Trash, Leaf, Recycle, Warning } from '@phosphor-icons/react'
 import StatusBar from './components/StatusBar.jsx'
 import ModelSelector from './components/ModelSelector.jsx'
 import UploadPanel from './components/UploadPanel.jsx'
@@ -25,7 +25,7 @@ const fadeUp = {
 }
 
 export default function App() {
-  const [mode, setMode] = useState('classify')
+  const [mode, setMode] = useState('clip')
   const [result, setResult] = useState(null)
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState(null)
@@ -58,25 +58,14 @@ export default function App() {
         {/* 标题 */}
         <motion.header
           {...fadeUp}
-          className="mt-5 mb-6 lg:mb-8"
+          className="mt-5 mb-6 lg:mb-8 flex items-center gap-4"
         >
-          <div className="flex items-center gap-3 mb-2">
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold uppercase tracking-[0.15em] bg-indigo-50 text-indigo-500 border border-indigo-100">
-              <Flask weight="bold" className="w-3 h-3" />
-              ESP32-S3
-            </span>
-            <span className="inline-flex items-center gap-1.5 px-3 py-1 rounded-full text-[11px] font-semibold uppercase tracking-[0.15em] bg-emerald-50 text-emerald-600 border border-emerald-100">
-              <Leaf weight="bold" className="w-3 h-3" />
-              智能分类
-            </span>
-          </div>
-          <h1 className="text-3xl md:text-5xl font-bold tracking-tight text-zinc-900 text-balance max-w-3xl">
-            智能垃圾分类系统
+          <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-zinc-900">
+            Garbage Classifier
           </h1>
-          <p className="mt-2 text-sm text-zinc-500 leading-relaxed max-w-[65ch]">
-            基于 CLIP 和 YOLO 模型驱动的实时垃圾识别平台。
-            ESP32-S3 采集图像，云端 AI 识别，精准分类投放。
-          </p>
+          <span className="px-3 py-1 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-500 border border-indigo-100">
+            ESP32-S3
+          </span>
         </motion.header>
 
         {/* ====== 核心区域：硬件 + 模型状态（主要展示） ====== */}

@@ -5,7 +5,7 @@ import { getHistory, clearHistory } from '../api'
 
 const FILTER_OPTIONS = [
   { key: 'all', label: '全部' },
-  { key: 'classify', label: 'CLIP' },
+  { key: 'classify', label: '分类' },
   { key: 'detect', label: 'YOLO' },
   { key: 'hardware', label: '硬件' }
 ]
@@ -154,7 +154,10 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
                     </div>
                     <div className="flex items-center gap-2 mt-1.5">
                       <span className="text-[10px] uppercase tracking-wider text-zinc-400 font-semibold">
-                        {entry.mode === 'hardware' ? '硬件' : entry.mode === 'detect' ? 'YOLO' : 'CLIP'}
+                        {entry.mode === 'hardware' ? '硬件' : entry.mode === 'detect' ? 'YOLO' : (() => {
+                          const mu = entry.data?.model_used || 'CLIP'
+                          return mu === 'clip (fallback)' ? 'CLIP' : mu
+                        })()}
                       </span>
                       {cat && (
                         <span className={`text-[10px] font-semibold ${cat.text}`}>{cat.labelZh}</span>

@@ -55,8 +55,8 @@ Adafruit_ST7735 tft = Adafruit_ST7735(PIN_CS, PIN_DC, PIN_MOSI, PIN_SCLK, PIN_RS
 // ==============================
 // 参数
 // ==============================
-#define HTTP_TIMEOUT_MS  15000
-#define FIRMWARE_VERSION "1.0.0"
+#define HTTP_TIMEOUT_MS  10000
+#define FIRMWARE_VERSION "3.0.0"
 
 // 颜色
 #define C_BLACK     ST7735_BLACK
@@ -306,8 +306,16 @@ bool captureAndClassify() {
   memcpy(bodyBuf + head.length(), jpgBuf, jpgLen);
   memcpy(bodyBuf + head.length() + jpgLen, foot.c_str(), foot.length());
 
+  // 检查 WiFi 是否还连着
+  if (WiFi.status() != WL_CONNECTED) {
+    free(bodyBuf); free(jpgBuf);
+    err("WiFi lost");
+    return false;
+  }
+
   HTTPClient http;
-  String url = "http://" + String(SERVER_HOST) + ":" + String(SERVER_PORT)
+  String hostStr = String(SERVER_HOST) + ":" + String(SERVER_PORT);
+  String url = "http://" + hostStr
              + "/classify?source=esp32&ip=" + WiFi.localIP().toString();
   http.begin(url);
   http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
@@ -319,7 +327,19 @@ bool captureAndClassify() {
   if (code != 200) {
     http.end();
     free(jpgBuf);
-    err("HTTP fail");
+    delay(500);  // 让 socket 完全关闭
+
+    cls();
+    txt(0, 5, 2, C_RED, "HTTP ERR");
+    txt(0, 30, 1, C_WHITE, "Code:");
+    num(45, 30, 2, C_WHITE, code);
+    txt(0, 55, 1, C_DARKGREY, "Srv:");
+    txt(30, 55, 1, C_YELLOW, hostStr.c_str());
+    txt(0, 70, 1, C_DARKGREY, "RSSI:");
+    num(40, 70, 1, C_YELLOW, WiFi.RSSI());
+    txt(0, 95, 1, C_DARKGREY, "Retry in 3s...");
+    delay(3000);
+    drawReady();
     return false;
   }
 
@@ -332,8 +352,9 @@ bool captureAndClassify() {
   DynamicJsonDocument doc(4096);
   if (body.length() == 0 || deserializeJson(doc, body)) { free(jpgBuf); err("JSON error"); return false; }
 
-  String itemEn = doc["result"]["item_label"] | "?";
-  float  conf   = doc["result"]["confidence"] | 0.0f;
+  String itemEn  = doc["result"]["item_label"] | "?";
+  float  conf    = doc["result"]["confidence"] | 0.0f;
+  String modelUs = doc["result"]["model_used"] | "?";
 
   // 显示
   cls();
@@ -386,6 +407,8 @@ bool captureAndClassify() {
            totalMs / 1000, (totalMs % 1000) / 100);
   txt(0, 134, 1, C_DARKGREY, buf);
 
+  txt(0, 148, 1, C_DARKGREY, modelUs.c_str());
+
   // 硬件采集已在 /classify?source=esp32 中自动处理，无需额外请求
   free(jpgBuf);
   return true;
@@ -409,6 +432,14 @@ void drawReady() {
   txt(0, 47, 1, C_WHITE, "front of camera");
   txt(0, 70, 2, C_CYAN, "Press BOOT");
   txt(0, 95, 1, C_YELLOW, "to classify");
+  // WiFi 状态
+  int rssi = WiFi.RSSI();
+  tft.setCursor(0, 120);
+  tft.setTextSize(1);
+  tft.setTextColor(rssi > -60 ? C_GREEN : rssi > -75 ? C_YELLOW : C_RED);
+  tft.print("WiFi ");
+  tft.print(rssi);
+  tft.print("dBm");
 }
 
 // ==============================
@@ -455,51 +486,37 @@ void setup() {
 // loop — 等 BOOT 键触发
 // ==============================
 void loop() {
-  switch (state) {
-    case ST_READY:
-      if (WiFi.status() != WL_CONNECTED) {
-        err("WiFi lost");
-        wifiConnect();
-        drawReady();
-        state = ST_READY;
-      }
-      // 等 BOOT 按钮按下 (LOW)
-      if (digitalRead(PIN_BOOT) == LOW) {
-        delay(50);  // 消抖
-        if (digitalRead(PIN_BOOT) == LOW) {
-          state = ST_CAPTURE;
-          while (digitalRead(PIN_BOOT) == LOW) delay(10);  // 等松开
-        }
-      }
-      break;
+  // 检查 WiFi，掉了就重连
+  if (WiFi.status() != WL_CONNECTED) {
+    drawBoot();
+    txt(0, 83, 1, C_RED, "WiFi lost");
+    txt(0, 95, 1, C_WHITE, "Reconnecting...");
+    wifiConnect();
+    drawReady();
+  }
 
-    case ST_CAPTURE:
-      if (!captureAndClassify()) state = ST_ERROR;
-      else { state = ST_RESULT; resultShownMs = millis(); }
-      break;
+  // 等 BOOT 按钮按下 (LOW)
+  if (digitalRead(PIN_BOOT) == LOW) {
+    delay(50);
+    if (digitalRead(PIN_BOOT) == LOW) {
+      // 消抖通过，执行拍照+分类
+      captureAndClassify();
 
-    case ST_RESULT:
-      // 12s 后自动回到就绪；3s 冷却期内忽略 BOOT，避免 WiFi socket 耗尽
-      if (millis() - resultShownMs > 12000) {
-        drawReady();
-        state = ST_READY;
-      } else if (millis() - resultShownMs > 3000) {
-        if (digitalRead(PIN_BOOT) == LOW) {
-          delay(50);
-          if (digitalRead(PIN_BOOT) == LOW) {
-            state = ST_CAPTURE;
-            while (digitalRead(PIN_BOOT) == LOW) delay(10);
-          }
-        }
+      // 等松开
+      while (digitalRead(PIN_BOOT) == LOW) delay(10);
+
+      // 5 秒冷却，显示倒计时
+      for (int i = 5; i > 0; i--) {
+        tft.fillRect(0, 140, 128, 20, C_BLACK);
+        tft.setCursor(50, 144);
+        tft.setTextSize(1);
+        tft.setTextColor(C_DARKGREY);
+        tft.print(i);
+        tft.print("s...");
+        delay(1000);
       }
-      break;
-
-    case ST_ERROR:
-      delay(2000);
-      cls();
-      txt(0, 5, 2, C_WHITE, "Retrying...");
-      state = ST_READY;
-      break;
+      drawReady();
+    }
   }
   delay(30);
 }

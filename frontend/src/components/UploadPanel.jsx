@@ -20,8 +20,10 @@ export default function UploadPanel({ mode, isLoading, setIsLoading, setError, o
     setError(null)
 
     try {
-      const apiFn = mode === 'classify' ? classifyImage : detectImage
-      const data = await apiFn(file)
+      const isDetect = mode === 'detect'
+      const data = isDetect
+        ? await detectImage(file)
+        : await classifyImage(file, mode)
       onResult(data, url)
     } catch (err) {
       setError(err.message || '网络错误，请检查后端服务是否运行')
@@ -46,7 +48,11 @@ export default function UploadPanel({ mode, isLoading, setIsLoading, setError, o
     onClear()
   }
 
-  const modeLabel = mode === 'classify' ? 'CLIP 分类' : 'YOLO 检测'
+  const modeLabels = {
+    clip: 'CLIP 分类', doubao: '豆包 Vision', qwen: '千问 Vision',
+    custom: '自定义 Vision', detect: 'YOLO 检测'
+  }
+  const modeLabel = modeLabels[mode] || 'CLIP 分类'
 
   return (
     <div className="glass-card rounded-[2.5rem] p-6 lg:p-8">
@@ -83,7 +89,7 @@ export default function UploadPanel({ mode, isLoading, setIsLoading, setError, o
                 <div className="flex items-center gap-3 px-5 py-3 rounded-2xl bg-white shadow-lg">
                   <div className="w-5 h-5 border-2 border-indigo-500 border-t-transparent rounded-full animate-spin" />
                   <span className="text-sm font-medium text-zinc-700">
-                    {mode === 'classify' ? 'CLIP 识别中...' : 'YOLO 检测中...'}
+                    {mode === 'detect' ? 'YOLO 检测中...' : `${modeLabel} 识别中...`}
                   </span>
                 </div>
               </div>
@@ -139,9 +145,11 @@ export default function UploadPanel({ mode, isLoading, setIsLoading, setError, o
 
       {/* 模式说明 */}
       <p className="mt-4 text-[11px] text-zinc-400 leading-relaxed px-1">
-        {mode === 'classify'
-          ? 'CLIP 零样本分类：识别图像中的物体并自动匹配垃圾类别'
-          : 'YOLO 目标检测：在图像中定位物体并用边界框标出'
+        {mode === 'detect'
+          ? 'YOLO 目标检测：在图像中定位物体并用边界框标出'
+          : mode === 'clip'
+            ? 'CLIP 零样本分类：识别图像中的物体并自动匹配垃圾类别'
+            : `${modeLabel}：云端大模型视觉识别，返回图片中物品的英文名称`
         }
       </p>
     </div>
