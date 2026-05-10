@@ -22,16 +22,38 @@ export function getModels() {
   return request('/models')
 }
 
-export async function classifyImage(file) {
+export async function classifyImage(file, model = '') {
   const formData = new FormData()
   formData.append('file', file)
-  return request('/classify', { method: 'POST', body: formData })
+  const qs = model ? `?model=${model}` : ''
+  return request(`/classify${qs}`, { method: 'POST', body: formData })
 }
 
 export async function detectImage(file) {
   const formData = new FormData()
   formData.append('file', file)
   return request('/detect', { method: 'POST', body: formData })
+}
+
+export function getActiveModel() {
+  return request('/model/active')
+}
+
+export async function setActiveModel(model) {
+  return request(`/model/active?model=${model}`, { method: 'POST' })
+}
+
+export async function configureProvider(provider, apiKey, apiBase, model) {
+  return request('/model/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      provider,
+      api_key: apiKey || '',
+      api_base: apiBase || '',
+      model: model || ''
+    })
+  })
 }
 
 export function getHistory(page = 1, limit = 20) {

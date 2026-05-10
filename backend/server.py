@@ -17,11 +17,15 @@ import traceback
 import threading
 import time
 import base64
+import json
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response
+from pydantic import BaseModel
 from transformers import CLIPProcessor, CLIPModel
 from ultralytics import YOLO
 
@@ -109,6 +113,103 @@ def 获取垃圾分类(item_label_zh: str):
     return "other", "其他垃圾"
 
 
+# ===================== 识图大模型配置 =====================
+VISION_PROVIDERS = {
+    "doubao": {
+        "name": "豆包 Vision",
+        "api_base": "https://ark.cn-beijing.volces.com/api/v3",
+        "model": "doubao-vision-pro-32k",
+        "api_key": ""
+    },
+    "qwen": {
+        "name": "千问 Vision",
+        "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+        "model": "qwen-vl-max",
+        "api_key": ""
+    },
+    "custom": {
+        "name": "自定义 Vision",
+        "api_base": "",
+        "model": "",
+        "api_key": ""
+    }
+}
+
+def _match_vision_label(en_name: str):
+    """将视觉大模型返回的物品英文名匹配到 LABEL_MAP"""
+    en_lower = en_name.lower().strip().rstrip('.')
+    # 精确匹配
+    for en_key, zh_name in LABEL_MAP.items():
+        if en_lower == en_key.lower():
+            return en_key, zh_name
+    # 包含匹配
+    for en_key, zh_name in LABEL_MAP.items():
+        if en_lower in en_key.lower() or en_key.lower() in en_lower:
+            return en_key, zh_name
+    # 单词匹配
+    words = set(en_lower.split())
+    for en_key, zh_name in LABEL_MAP.items():
+        key_words = set(en_key.lower().split())
+        if words & key_words:
+            return en_key, zh_name
+    return en_name, en_name
+
+def _call_vision_llm(image_data: bytes, provider_id: str) -> tuple:
+    """调用 OpenAI 兼容视觉大模型 API。返回 (item_label_en, confidence)"""
+    cfg = VISION_PROVIDERS.get(provider_id)
+    if not cfg or not cfg["api_key"]:
+        raise HTTPException(status_code=400, detail=f"Provider '{provider_id}' not configured")
+
+    img_b64 = base64.b64encode(image_data).decode()
+    print(f"[Vision/{provider_id}] 调用 {cfg['name']} 模型: {cfg['model']}")
+    print(f"[Vision/{provider_id}] API: {cfg['api_base']}/chat/completions")
+    print(f"[Vision/{provider_id}] 图片大小: {len(image_data)} bytes (base64: {len(img_b64)} chars)")
+
+    payload = {
+        "model": cfg["model"],
+        "messages": [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}},
+                {"type": "text", "text": "Identify the main object in this image. Return only the English name of the object, nothing else. Be specific but concise. Example: 'apple', 'plastic bottle', 'book'."}
+            ]
+        }],
+        "max_tokens": 50,
+        "temperature": 0.1
+    }
+
+    url = f"{cfg['api_base']}/chat/completions"
+    req = urllib.request.Request(
+        url,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {cfg['api_key']}"
+        }
+    )
+
+    t_start = time.time()
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            raw = resp.read().decode("utf-8")
+            result = json.loads(raw)
+    except urllib.error.HTTPError as e:
+        body = e.read().decode("utf-8", errors="replace") if hasattr(e, 'read') else ""
+        print(f"[Vision/{provider_id}] HTTP {e.code}: {e.reason} | body: {body[:300]}")
+        raise HTTPException(status_code=502, detail=f"Vision API HTTP {e.code}: {e.reason}")
+    except Exception as e:
+        print(f"[Vision/{provider_id}] 调用失败: {str(e)}")
+        raise HTTPException(status_code=502, detail=f"Vision API call failed: {str(e)}")
+
+    elapsed = (time.time() - t_start) * 1000
+    print(f"[Vision/{provider_id}] 响应耗时: {elapsed:.0f}ms")
+    print(f"[Vision/{provider_id}] 原始响应: {json.dumps(result, ensure_ascii=False)[:500]}")
+
+    item_en = result["choices"][0]["message"]["content"].strip()
+    print(f"[Vision/{provider_id}] 识别结果: {item_en}")
+    return item_en, 0.90
+
+
 # ===================== 共享状态 (线程安全) =====================
 state_lock = threading.Lock()
 server_start_time = time.time()
@@ -124,6 +225,7 @@ hardware_state = {
 last_capture_image = None  # raw JPEG bytes
 server_history = []
 HISTORY_MAX = 50
+active_classify_model = "clip"  # 当前分类模型: clip / doubao / qwen / custom
 
 
 def _make_thumbnail(image_data: bytes, max_edge: int = 320) -> str:
@@ -160,7 +262,7 @@ def _add_history(mode: str, data: dict, image_data: bytes):
 
 
 # ===================== FastAPI 初始化 =====================
-app = FastAPI(title="物品识别API", version="1.0.0")
+app = FastAPI(title="物品识别API", version="3.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ===================== 核心加速（无编译，100%兼容Windows） =====================
@@ -207,15 +309,60 @@ def 缩放到最大边(image: Image.Image, max_edge: int = 1280) -> Image.Image:
     return image.resize(new_size, Image.Resampling.BILINEAR)
 
 
-# ===================== 识别接口（稳定无报错） =====================
-@app.post("/classify")
-async def classify_image(file: UploadFile = File(...), source: str = Query("web"), ip: str = Query("")):
-    try:
-        # 读取图片（只能读一次）
-        image_data = await file.read()
-        print(f"[classify] source={source}, ip={ip}, image_size={len(image_data)}")
+# ===================== CLIP 分类逻辑（提取为独立函数） =====================
+def _classify_clip(image_data: bytes):
+    image = Image.open(io.BytesIO(image_data)).convert("RGB")
+    image = 缩放到最大边(image, 1280)
 
-        # 如果是 ESP32 发来的请求，标记硬件在线
+    pixel_values = processor(images=image, return_tensors="pt").pixel_values.to(device)
+
+    with torch.inference_mode():
+        outputs = model(pixel_values=pixel_values, **text_inputs)
+
+    torch.cpu.synchronize()  # 确保所有线程完成，防止后续请求阻塞
+    probs = outputs.logits_per_image.softmax(dim=1).squeeze().cpu().numpy()
+    sorted_idx = np.argsort(probs)[::-1]
+
+    top3_list = [
+        {
+            "item_label": TEXT_PROMPTS[i],
+            "item_label_zh": LABEL_MAP[TEXT_PROMPTS[i]],
+            "waste_category": 获取垃圾分类(LABEL_MAP[TEXT_PROMPTS[i]])[0],
+            "waste_category_zh": 获取垃圾分类(LABEL_MAP[TEXT_PROMPTS[i]])[1],
+            "confidence": float(probs[i])
+        } for i in sorted_idx[:3]
+    ]
+
+    best_idx = sorted_idx[0]
+    best_item_zh = LABEL_MAP[TEXT_PROMPTS[best_idx]]
+    waste_category, waste_category_zh = 获取垃圾分类(best_item_zh)
+    return {
+        "waste_category": waste_category,
+        "waste_category_zh": waste_category_zh,
+        "item_label": TEXT_PROMPTS[best_idx],
+        "item_label_zh": best_item_zh,
+        "confidence": float(probs[best_idx]),
+        "tip": "请将垃圾投放到对应类别的收集容器中",
+        "top3": top3_list,
+        "model_used": "clip"
+    }
+
+
+# ===================== 识别接口 =====================
+@app.post("/classify")
+async def classify_image(
+    file: UploadFile = File(...),
+    source: str = Query("web"),
+    ip: str = Query(""),
+    model: str = Query(""),   # 可选：覆盖当前激活的分类模型
+    background_tasks: BackgroundTasks = None
+):
+    try:
+        image_data = await file.read()
+        classify_model = model if model else active_classify_model
+        print(f"[classify] source={source}, ip={ip}, model={classify_model}, image_size={len(image_data)}")
+
+        # ESP32 硬件上线标记
         if source == "esp32":
             global last_capture_image
             last_capture_image = image_data
@@ -225,56 +372,62 @@ async def classify_image(file: UploadFile = File(...), source: str = Query("web"
                 hardware_state["ip_address"] = ip or hardware_state.get("ip_address", "")
                 hardware_state["capture_count"] += 1
                 hardware_state["device_id"] = "ESP32-S3"
-                hardware_state["firmware_version"] = hardware_state.get("firmware_version") or "1.0.0"
+                hardware_state["firmware_version"] = hardware_state.get("firmware_version") or "3.0.0"
             print(f"[硬件] ESP32 已上线 ip={ip} captures={hardware_state['capture_count']}")
 
-        image = Image.open(io.BytesIO(image_data)).convert("RGB")
-        image = 缩放到最大边(image, 1280)
+        # 按模型路由
+        if classify_model == "clip":
+            result_data = _classify_clip(image_data)
+        elif classify_model in VISION_PROVIDERS:
+            if not VISION_PROVIDERS[classify_model]["api_key"]:
+                print(f"[classify] {classify_model} 未配置 API Key，回退到 CLIP")
+                result_data = _classify_clip(image_data)
+                result_data["model_used"] = "clip (fallback)"
+            else:
+                try:
+                    item_en, conf = _call_vision_llm(image_data, classify_model)
+                except Exception as e:
+                    print(f"[classify] Vision API 调用失败: {e}, 回退到 CLIP")
+                    if source != "esp32":
+                        raise  # web 用户看到错误
+                    result_data = _classify_clip(image_data)
+                    result_data["model_used"] = "clip (fallback)"
+                else:
+                    en_key, item_zh = _match_vision_label(item_en)
+                    waste_category, waste_category_zh = 获取垃圾分类(item_zh)
+                    top3_entry = {
+                        "item_label": en_key,
+                        "item_label_zh": item_zh,
+                        "waste_category": waste_category,
+                        "waste_category_zh": waste_category_zh,
+                        "confidence": conf
+                    }
+                    result_data = {
+                        "waste_category": waste_category,
+                        "waste_category_zh": waste_category_zh,
+                        "item_label": en_key,
+                        "item_label_zh": item_zh,
+                        "confidence": conf,
+                        "tip": "请将垃圾投放到对应类别的收集容器中",
+                        "top3": [top3_entry],
+                        "model_used": classify_model
+                    }
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown model: {classify_model}")
 
-        # 图片预处理
-        pixel_values = processor(images=image, return_tensors="pt").pixel_values.to(device)
-
-        # 极速推理（无编译，纯原生加速）
-        with torch.inference_mode():
-            outputs = model(pixel_values=pixel_values, **text_inputs)
-
-        # 计算结果
-        probs = outputs.logits_per_image.softmax(dim=1).squeeze().cpu().numpy()
-        sorted_idx = np.argsort(probs)[::-1]
-
-        # 构造返回
-        top3_list = [
-            {
-                "item_label": TEXT_PROMPTS[i],
-                "item_label_zh": LABEL_MAP[TEXT_PROMPTS[i]],
-                "waste_category": 获取垃圾分类(LABEL_MAP[TEXT_PROMPTS[i]])[0],
-                "waste_category_zh": 获取垃圾分类(LABEL_MAP[TEXT_PROMPTS[i]])[1],
-                "confidence": float(probs[i])
-            } for i in sorted_idx[:3]
-        ]
-
-        best_idx = sorted_idx[0]
-        best_item_zh = LABEL_MAP[TEXT_PROMPTS[best_idx]]
-        waste_category, waste_category_zh = 获取垃圾分类(best_item_zh)
-        result_data = {
-            "waste_category": waste_category,
-            "waste_category_zh": waste_category_zh,
-            "item_label": TEXT_PROMPTS[best_idx],
-            "item_label_zh": best_item_zh,
-            "confidence": float(probs[best_idx]),
-            "tip": "请将垃圾投放到对应类别的收集容器中",
-            "top3": top3_list
-        }
-
-        # 写入历史
-        _add_history("classify", result_data, image_data)
+        if background_tasks:
+            background_tasks.add_task(_add_history, "classify", result_data, image_data)
+        else:
+            _add_history("classify", result_data, image_data)
 
         return {
             "success": True,
             "result": result_data,
-            "message": f"识别结果：{LABEL_MAP[TEXT_PROMPTS[best_idx]]} 置信度：{probs[best_idx] * 100:.1f}%"
+            "message": f"识别结果：{result_data['item_label_zh']} 置信度：{result_data['confidence'] * 100:.1f}%"
         }
 
+    except HTTPException:
+        raise
     except Exception as e:
         print(f"[错误] {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"识别失败：{str(e)}")
@@ -293,8 +446,68 @@ async def health():
         "hardware_online": hw_online,
         "hardware_captures": capture_count,
         "device": device,
-        "clip_labels": len(TEXT_PROMPTS)
+        "clip_labels": len(TEXT_PROMPTS),
+        "active_model": active_classify_model
     }
+
+
+# ===================== 模型管理接口 =====================
+@app.get("/model/active")
+async def get_active_model():
+    """获取当前激活的分类模型及可用 provider 列表"""
+    providers = []
+    for pid, cfg in VISION_PROVIDERS.items():
+        providers.append({
+            "id": pid,
+            "name": cfg["name"],
+            "configured": bool(cfg["api_key"]),
+            "model": cfg["model"] or "(not set)"
+        })
+    return {
+        "active": active_classify_model,
+        "providers": providers
+    }
+
+
+class ModelConfigBody(BaseModel):
+    provider: str
+    api_key: str = ""
+    api_base: str = ""
+    model: str = ""
+
+
+@app.post("/model/config")
+async def configure_provider(body: ModelConfigBody):
+    """配置识图大模型 API 参数"""
+    if body.provider not in VISION_PROVIDERS:
+        raise HTTPException(status_code=400, detail=f"Unknown provider: {body.provider}")
+    cfg = VISION_PROVIDERS[body.provider]
+    if body.api_key:
+        cfg["api_key"] = body.api_key
+    if body.api_base:
+        cfg["api_base"] = body.api_base
+    if body.model:
+        cfg["model"] = body.model
+    return {
+        "success": True,
+        "provider": body.provider,
+        "configured": bool(cfg["api_key"]),
+        "message": f"Provider '{body.provider}' configured"
+    }
+
+
+@app.post("/model/active")
+async def set_active_model(model: str = Query(...)):
+    """设置当前分类模型"""
+    global active_classify_model
+    valid = ["clip"] + list(VISION_PROVIDERS.keys())
+    if model not in valid:
+        raise HTTPException(status_code=400, detail=f"Unknown model: {model}. Valid: {valid}")
+    active_classify_model = model
+    return {"active": active_classify_model, "message": f"Active model set to '{model}'"}
+
+
+# ===================== YOLO 检测接口 =====================
 
 
 @app.post("/detect")
@@ -389,26 +602,37 @@ async def detect_image(file: UploadFile = File(...)):
 async def get_models():
     yolo_names = yolo_model.names if yolo_model else {}
     yolo_labels = list(yolo_names.values()) if isinstance(yolo_names, dict) else [str(i) for i in range(len(yolo_names))]
-    return {
-        "models": [
-            {
-                "id": "classify",
-                "name": "CLIP ViT-B/32",
-                "type": "classify",
-                "description": "Zero-shot image classification — identifies objects and maps to waste categories.",
-                "labels_count": len(TEXT_PROMPTS),
-                "labels": TEXT_PROMPTS[:20]
-            },
-            {
-                "id": "detect",
-                "name": "YOLO exp-22",
-                "type": "detect",
-                "description": "Custom-trained object detection — locates and identifies objects with bounding boxes.",
-                "labels_count": len(yolo_labels),
-                "labels": yolo_labels[:20]
-            }
-        ]
-    }
+    models_list = [
+        {
+            "id": "clip",
+            "name": "CLIP ViT-B/32",
+            "type": "classify",
+            "description": "Zero-shot image classification — identifies objects and maps to waste categories.",
+            "labels_count": len(TEXT_PROMPTS),
+            "labels": TEXT_PROMPTS[:20]
+        }
+    ]
+    # 添加已配置的识图大模型
+    for pid, cfg in VISION_PROVIDERS.items():
+        models_list.append({
+            "id": pid,
+            "name": cfg["name"],
+            "type": "classify",
+            "description": f"Vision LLM — cloud-based image recognition via {cfg['name']}.",
+            "labels_count": 0,
+            "labels": [],
+            "configured": bool(cfg["api_key"]),
+            "model": cfg["model"] or "(not set)"
+        })
+    models_list.append({
+        "id": "detect",
+        "name": "YOLO exp-22",
+        "type": "detect",
+        "description": "Custom-trained object detection — locates and identifies objects with bounding boxes.",
+        "labels_count": len(yolo_labels),
+        "labels": yolo_labels[:20]
+    })
+    return {"models": models_list}
 
 
 # ===================== 历史记录接口 =====================
@@ -439,7 +663,7 @@ async def clear_history():
 async def hardware_capture(
     file: UploadFile = File(...),
     device_id: str = Query("ESP32-S3"),
-    firmware_version: str = Query("1.0.0"),
+    firmware_version: str = Query("3.0.0"),
     ip_address: str = Query("unknown")
 ):
     """ESP32-S3 上传采集图片"""

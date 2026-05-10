@@ -11,7 +11,8 @@ export default defineConfig({
       '/health': 'http://localhost:8085',
       '/hardware': 'http://localhost:8085',
       '/history': 'http://localhost:8085',
-      '/models': 'http://localhost:8085'
+      '/models': 'http://localhost:8085',
+      '/model': 'http://localhost:8085'
     }
   }
 })
