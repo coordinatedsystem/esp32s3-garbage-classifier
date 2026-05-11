@@ -12,7 +12,8 @@ export default defineConfig({
       '/hardware': 'http://localhost:8085',
       '/history': 'http://localhost:8085',
       '/models': 'http://localhost:8085',
-      '/model': 'http://localhost:8085'
+      '/model': 'http://localhost:8085',
+      '/trigger': 'http://localhost:8085'
     }
   }
 })

@@ -71,3 +71,15 @@ export function getHardwareStatus() {
 export function getHardwareImageUrl() {
   return `${API_BASE}/hardware/image`
 }
+
+export function getTriggerConfig() {
+  return request('/trigger/config')
+}
+
+export function setTriggerConfig(config) {
+  return request('/trigger/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config)
+  })
+}

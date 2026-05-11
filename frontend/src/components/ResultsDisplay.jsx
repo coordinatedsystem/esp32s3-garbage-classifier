@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { CaretUp, CaretDown, CheckCircle, Info, Target, ChartBar, BookOpen } from '@phosphor-icons/react'
+import { CaretUp, CaretDown, CheckCircle, Info, Target, ChartBar, BookOpen, Timer } from '@phosphor-icons/react'
 import ConfidenceGauge from './ConfidenceGauge'
 
 const barColors = ['bg-indigo-500', 'bg-indigo-300', 'bg-zinc-300']
@@ -22,7 +22,7 @@ export default function ResultsDisplay({ result, categoryConfig }) {
 }
 
 function ClassifyResult({ result, categoryConfig }) {
-  const { item_label_zh, waste_category, waste_category_zh, confidence, top3, tip } = result.result
+  const { item_label_zh, waste_category, waste_category_zh, confidence, top3, tip, response_time_ms, model_used } = result.result
   const cat = categoryConfig[waste_category] || categoryConfig.other
   const Icon = cat.icon
   const [showInfo, setShowInfo] = useState(false)
@@ -53,6 +53,19 @@ function ClassifyResult({ result, categoryConfig }) {
             置信度 {(confidence * 100).toFixed(1)}%
           </motion.span>
         </div>
+        {(response_time_ms !== undefined || model_used) && (
+          <div className="flex items-center gap-4 mt-3 text-[10px] text-zinc-400">
+            {response_time_ms !== undefined && (
+              <span className="flex items-center gap-1">
+                <Timer weight="bold" className="w-3 h-3" />
+                {response_time_ms}ms
+              </span>
+            )}
+            {model_used && (
+              <span className="font-mono">{model_used}</span>
+            )}
+          </div>
+        )}
       </div>
 
       {/* 置信度分析 */}

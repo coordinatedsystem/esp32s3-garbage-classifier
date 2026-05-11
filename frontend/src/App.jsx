@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Trash, Leaf, Recycle, Warning } from '@phosphor-icons/react'
+import { Trash, Leaf, Recycle, Warning, Cpu, Brain, Upload, ChartBar } from '@phosphor-icons/react'
 import StatusBar from './components/StatusBar.jsx'
 import ModelSelector from './components/ModelSelector.jsx'
 import UploadPanel from './components/UploadPanel.jsx'
@@ -15,14 +15,11 @@ const CATEGORY_CONFIG = {
   other:       { icon: Trash,     label: '其他垃圾', labelZh: '其他垃圾', gradient: 'from-zinc-500 to-zinc-700',    bg: 'bg-zinc-100',  text: 'text-zinc-600',   ring: 'ring-zinc-300' },
 }
 
-const stagger = {
-  animate: { transition: { staggerChildren: 0.06 } }
-}
-
-const fadeUp = {
-  initial: { opacity: 0, y: 12 },
-  animate: { opacity: 1, y: 0, transition: { duration: 0.45, ease: [0.16, 1, 0.3, 1] } }
-}
+const NAV_ITEMS = [
+  { key: 'hardware', label: '硬件与触发', icon: Cpu },
+  { key: 'model',    label: '识别引擎',   icon: Brain },
+  { key: 'upload',   label: '上传与结果', icon: Upload },
+]
 
 export default function App() {
   const [mode, setMode] = useState('clip')
@@ -30,6 +27,7 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState(null)
   const [historyKey, setHistoryKey] = useState(0)
+  const [activeTab, setActiveTab] = useState('hardware')
 
   const handleResult = useCallback((data, imageUrl) => {
     setResult(data)
@@ -43,90 +41,113 @@ export default function App() {
   }, [])
 
   return (
-    <div className="min-h-[100dvh] bg-[#fafafa]">
-      {/* 环境光晕 */}
-      <div className="fixed inset-0 pointer-events-none z-0">
-        <div className="absolute top-0 right-0 w-[700px] h-[700px] bg-indigo-100/30 rounded-full blur-[140px] translate-x-1/3 -translate-y-1/3" />
-        <div className="absolute bottom-0 left-0 w-[600px] h-[600px] bg-violet-100/25 rounded-full blur-[120px] -translate-x-1/4 translate-y-1/4" />
-        <div className="absolute top-1/2 left-1/2 w-[400px] h-[400px] bg-amber-50/20 rounded-full blur-[100px] -translate-x-1/2 -translate-y-1/2" />
-      </div>
+    <div className="min-h-[100dvh] bg-[#f8f8f8]">
+      <div className="flex h-screen overflow-hidden">
 
-      <div className="relative z-10 max-w-[1500px] mx-auto px-4 sm:px-6 lg:px-8 py-6 lg:py-10">
-        {/* 顶部状态栏 */}
-        <StatusBar />
+        {/* ====== 左侧导航栏 (窄) ====== */}
+        <nav className="w-[200px] flex-shrink-0 border-r border-zinc-200 bg-white flex flex-col">
+          <div className="px-5 py-5 border-b border-zinc-100">
+            <h1 className="text-base font-bold text-zinc-900">垃圾分类系统</h1>
+          </div>
 
-        {/* 标题 */}
-        <motion.header
-          {...fadeUp}
-          className="mt-5 mb-6 lg:mb-8 flex items-center gap-4"
-        >
-          <h1 className="text-2xl md:text-3xl font-bold tracking-tight text-zinc-900">
-            Garbage Classifier
-          </h1>
-          <span className="px-3 py-1 rounded-full text-[11px] font-semibold bg-indigo-50 text-indigo-500 border border-indigo-100">
-            ESP32-S3
-          </span>
-        </motion.header>
+          <div className="flex-1 py-4 space-y-1 px-3">
+            {NAV_ITEMS.map((item) => {
+              const Icon = item.icon
+              const isActive = activeTab === item.key
+              return (
+                <button
+                  key={item.key}
+                  onClick={() => setActiveTab(item.key)}
+                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all ${
+                    isActive
+                      ? 'bg-indigo-50 text-indigo-700'
+                      : 'text-zinc-500 hover:bg-zinc-50 hover:text-zinc-700'
+                  }`}
+                >
+                  <Icon weight={isActive ? 'fill' : 'regular'} className="w-5 h-5" />
+                  {item.label}
+                </button>
+              )
+            })}
+          </div>
 
-        {/* ====== 核心区域：硬件 + 模型状态（主要展示） ====== */}
-        <motion.div
-          variants={stagger}
-          initial="initial"
-          animate="animate"
-          className="grid grid-cols-1 lg:grid-cols-2 gap-5 lg:gap-6 mb-6"
-        >
-          <motion.div variants={fadeUp}>
-            <HardwarePanel />
-          </motion.div>
-          <motion.div variants={fadeUp}>
-            <ModelSelector mode={mode} setMode={setMode} disabled={isLoading} />
-          </motion.div>
-        </motion.div>
+          <div className="px-4 py-4 border-t border-zinc-100">
+            <p className="text-xs text-zinc-400">ESP32-S3 v4.0.0</p>
+          </div>
+        </nav>
 
-        {/* ====== 次区域：上传 + 识别结果（放后面） ====== */}
-        <motion.div
-          variants={stagger}
-          initial="initial"
-          animate="animate"
-          className="grid grid-cols-1 lg:grid-cols-[1fr_1.618fr] gap-5 lg:gap-6 mb-8"
-        >
-          {/* 上传面板 */}
-          <motion.div variants={fadeUp}>
-            <UploadPanel
-              mode={mode}
-              setMode={setMode}
-              isLoading={isLoading}
-              setIsLoading={setIsLoading}
-              setError={setError}
-              onResult={handleResult}
-              onClear={handleClear}
-            />
-          </motion.div>
+        {/* ====== 右侧主区域 ====== */}
+        <main className="flex-1 flex flex-col overflow-hidden min-w-0">
+          {/* 状态栏 */}
+          <div className="px-6 py-3 border-b border-zinc-200 bg-white">
+            <StatusBar />
+          </div>
 
-          {/* 识别结果 */}
-          <motion.div variants={fadeUp}>
-            <AnimatePresence mode="wait">
-              {isLoading ? (
-                <LoadingSkeleton key="loading" />
-              ) : error ? (
-                <ErrorState key="error" message={error} onDismiss={() => setError(null)} />
-              ) : result ? (
-                <ResultsDisplay key="result" result={result} categoryConfig={CATEGORY_CONFIG} />
-              ) : (
-                <EmptyState key="empty" />
+          {/* 内容区 */}
+          <div className="flex-1 overflow-y-auto p-6">
+            <div className="max-w-[960px] mx-auto space-y-6">
+              {/* 选项卡内容 */}
+              <AnimatePresence mode="wait">
+                {activeTab === 'hardware' && (
+                  <motion.div
+                    key="hardware"
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                  >
+                    <HardwarePanel />
+                  </motion.div>
+                )}
+
+                {activeTab === 'model' && (
+                  <motion.div
+                    key="model"
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                  >
+                    <ModelSelector mode={mode} setMode={setMode} disabled={isLoading} />
+                  </motion.div>
+                )}
+
+                {activeTab === 'upload' && (
+                  <motion.div
+                    key="upload"
+                    initial={{ opacity: 0, y: 8 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    exit={{ opacity: 0, y: -8 }}
+                    className="space-y-6"
+                  >
+                    <UploadPanel
+                      mode={mode}
+                      setMode={setMode}
+                      isLoading={isLoading}
+                      setIsLoading={setIsLoading}
+                      setError={setError}
+                      onResult={handleResult}
+                      onClear={handleClear}
+                    />
+
+                    <AnimatePresence mode="wait">
+                      {isLoading ? (
+                        <LoadingSkeleton key="loading" />
+                      ) : error ? (
+                        <ErrorState key="error" message={error} onDismiss={() => setError(null)} />
+                      ) : result ? (
+                        <ResultsDisplay key="result" result={result} categoryConfig={CATEGORY_CONFIG} />
+                      ) : null}
+                    </AnimatePresence>
+                  </motion.div>
+                )}
+              </AnimatePresence>
+
+              {/* 历史记录 — 仅在硬件和上传标签时显示 */}
+              {(activeTab === 'hardware' || activeTab === 'upload') && (
+                <HistoryList categoryConfig={CATEGORY_CONFIG} refreshKey={historyKey} />
               )}
-            </AnimatePresence>
-          </motion.div>
-        </motion.div>
-
-        {/* ====== 历史记录（底部通栏） ====== */}
-        <motion.section
-          initial={{ opacity: 0, y: 20 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ delay: 0.25, duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
-        >
-          <HistoryList categoryConfig={CATEGORY_CONFIG} refreshKey={historyKey} />
-        </motion.section>
+            </div>
+          </div>
+        </main>
       </div>
     </div>
   )
@@ -136,13 +157,13 @@ export default function App() {
 
 function LoadingSkeleton() {
   return (
-    <div className="glass-card rounded-[2rem] p-8 lg:p-10 space-y-6">
-      <div className="skeleton rounded-xl h-6 w-32" />
-      <div className="skeleton rounded-2xl aspect-video w-full" />
-      <div className="space-y-3">
-        <div className="skeleton rounded-lg h-4 w-3/4" />
-        <div className="skeleton rounded-lg h-4 w-1/2" />
-        <div className="skeleton rounded-lg h-4 w-2/3" />
+    <div className="bg-white rounded-2xl border border-zinc-200 p-8 space-y-5">
+      <div className="skeleton rounded-lg h-5 w-28" />
+      <div className="skeleton rounded-xl aspect-video w-full" />
+      <div className="space-y-2.5">
+        <div className="skeleton rounded-md h-4 w-3/4" />
+        <div className="skeleton rounded-md h-4 w-1/2" />
+        <div className="skeleton rounded-md h-4 w-2/3" />
       </div>
     </div>
   )
@@ -151,48 +172,25 @@ function LoadingSkeleton() {
 function ErrorState({ message, onDismiss }) {
   return (
     <motion.div
-      initial={{ opacity: 0, scale: 0.98 }}
+      initial={{ opacity: 0, scale: 0.99 }}
       animate={{ opacity: 1, scale: 1 }}
-      exit={{ opacity: 0, scale: 0.98 }}
-      className="glass-card rounded-[2rem] p-8 lg:p-10"
+      exit={{ opacity: 0, scale: 0.99 }}
+      className="bg-white rounded-2xl border border-zinc-200 p-8"
     >
       <div className="flex flex-col items-center justify-center py-10 gap-4 text-center">
-        <div className="w-14 h-14 rounded-2xl bg-red-50 flex items-center justify-center">
+        <div className="w-14 h-14 rounded-xl bg-red-50 flex items-center justify-center">
           <Warning weight="fill" className="w-7 h-7 text-red-500" />
         </div>
         <div>
-          <h3 className="text-lg font-semibold text-zinc-800">识别失败</h3>
+          <h3 className="text-base font-bold text-zinc-800">识别失败</h3>
           <p className="mt-1 text-sm text-zinc-500 max-w-[40ch]">{message}</p>
         </div>
         <button
           onClick={onDismiss}
-          className="mt-2 px-5 py-2.5 rounded-xl bg-zinc-900 text-white text-sm font-medium spring-transition active:scale-[0.98] hover:bg-zinc-800"
+          className="mt-2 px-5 py-2.5 rounded-lg bg-zinc-900 text-white text-sm font-semibold transition-colors active:scale-[0.98] hover:bg-zinc-800"
         >
           重试
         </button>
-      </div>
-    </motion.div>
-  )
-}
-
-function EmptyState() {
-  return (
-    <motion.div
-      initial={{ opacity: 0 }}
-      animate={{ opacity: 1 }}
-      exit={{ opacity: 0 }}
-      className="glass-card rounded-[2rem] p-8 lg:p-10"
-    >
-      <div className="flex flex-col items-center justify-center py-12 gap-4 text-center">
-        <div className="w-16 h-16 rounded-2xl bg-zinc-100 flex items-center justify-center">
-          <Recycle weight="light" className="w-8 h-8 text-zinc-400" />
-        </div>
-        <div className="max-w-[32ch]">
-          <h3 className="text-lg font-semibold text-zinc-700">等待分析</h3>
-          <p className="mt-2 text-sm text-zinc-400 leading-relaxed">
-            上传图片或通过 ESP32-S3 设备采集图像，查看 AI 分类结果。
-          </p>
-        </div>
       </div>
     </motion.div>
   )

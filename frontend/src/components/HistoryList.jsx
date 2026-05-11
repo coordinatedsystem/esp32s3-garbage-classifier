@@ -96,8 +96,8 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
 
       {/* 内容 */}
       {loading ? (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
-          {Array.from({ length: 6 }).map((_, i) => (
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
+          {Array.from({ length: 4 }).map((_, i) => (
             <div key={i} className="rounded-2xl bg-white border border-zinc-100 overflow-hidden">
               <div className="aspect-[4/3] skeleton" />
               <div className="p-3 space-y-2">
@@ -118,7 +118,7 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
           </div>
         </div>
       ) : (
-        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-6 gap-3">
+        <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
           <AnimatePresence>
             {visible.map((entry, i) => {
               const isClassify = entry.mode === 'classify'
@@ -130,6 +130,7 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
               const cat = catKey ? (categoryConfig[catKey] || categoryConfig.other) : null
               const time = new Date(entry.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
               const pct = entry.data?.confidence !== undefined ? Math.round(entry.data.confidence * 100) : null
+              const respMs = entry.data?.response_time_ms
 
               return (
                 <motion.div
@@ -147,23 +148,26 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
                       <ImageSquare weight="light" className="w-8 h-8 text-zinc-300" />
                     )}
                   </div>
-                  <div className="p-3">
-                    <div className="flex items-center justify-between gap-2">
-                      <span className="text-xs font-medium text-zinc-800 truncate">{itemZh}</span>
-                      <span className="text-[10px] text-zinc-400 font-mono shrink-0">{time}</span>
+                  <div className="p-3.5">
+                    <div className="flex items-center justify-between gap-2 mb-1">
+                      <span className="text-sm font-semibold text-zinc-800 truncate">{itemZh}</span>
+                      <span className="text-xs text-zinc-400 font-mono shrink-0">{time}</span>
                     </div>
-                    <div className="flex items-center gap-2 mt-1.5">
-                      <span className="text-[10px] uppercase tracking-wider text-zinc-400 font-semibold">
+                    <div className="flex items-center flex-wrap gap-1.5">
+                      <span className="text-xs font-medium text-zinc-500">
                         {entry.mode === 'hardware' ? '硬件' : entry.mode === 'detect' ? 'YOLO' : (() => {
                           const mu = entry.data?.model_used || 'CLIP'
                           return mu === 'clip (fallback)' ? 'CLIP' : mu
                         })()}
                       </span>
                       {cat && (
-                        <span className={`text-[10px] font-semibold ${cat.text}`}>{cat.labelZh}</span>
+                        <span className={`text-xs font-semibold ${cat.text}`}>{cat.labelZh}</span>
                       )}
                       {pct !== null && (
-                        <span className="text-[10px] text-zinc-300 ml-auto">{pct}%</span>
+                        <span className="text-xs text-zinc-400 ml-auto">{pct}%</span>
+                      )}
+                      {respMs !== undefined && (
+                        <span className="text-xs text-zinc-400">{respMs}ms</span>
                       )}
                     </div>
                   </div>

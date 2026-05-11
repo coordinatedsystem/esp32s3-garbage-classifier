@@ -9,8 +9,10 @@
 #include <WiFi.h>
 #include <HTTPClient.h>
 #include <ArduinoJson.h>
+#include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_ST7735.h>
+#include <Adafruit_VL53L0X.h>
 #include "esp_camera.h"
 #include "wifi_config.h"
 #include "img_converters.h"   // fmt2jpg
@@ -31,6 +33,15 @@ Adafruit_ST7735 tft = Adafruit_ST7735(PIN_CS, PIN_DC, PIN_MOSI, PIN_SCLK, PIN_RS
 // BOOT 按钮 (GPIO 0, 按下为 LOW)
 // ==============================
 #define PIN_BOOT 0
+
+// ==============================
+// TOF200C VL53L0X 激光测距
+// ==============================
+#define TOF_SDA  47
+#define TOF_SCL  21
+#define TOF_INT  48
+#define TOF_SHUT 45
+Adafruit_VL53L0X tof = Adafruit_VL53L0X();
 
 // ==============================
 // 摄像头引脚
@@ -56,7 +67,7 @@ Adafruit_ST7735 tft = Adafruit_ST7735(PIN_CS, PIN_DC, PIN_MOSI, PIN_SCLK, PIN_RS
 // 参数
 // ==============================
 #define HTTP_TIMEOUT_MS  10000
-#define FIRMWARE_VERSION "3.0.0"
+#define FIRMWARE_VERSION "4.0.0"
 
 // 颜色
 #define C_BLACK     ST7735_BLACK
@@ -74,6 +85,15 @@ Adafruit_ST7735 tft = Adafruit_ST7735(PIN_CS, PIN_DC, PIN_MOSI, PIN_SCLK, PIN_RS
 enum State { ST_WIFI, ST_READY, ST_CAPTURE, ST_UPLOAD, ST_RESULT, ST_ERROR };
 State state = ST_WIFI;
 unsigned long resultShownMs = 0;  // 进入 ST_RESULT 的时间，用于冷却控制
+
+// 触发配置 (从服务器拉取)
+String  triggerMode = "button";   // "button" | "distance"
+int     distanceMin = 30;         // mm
+int     distanceMax = 300;        // mm
+int     cooldownMs  = 2000;       // ms, 物体稳定时间
+unsigned long presenceStart = 0;  // TOF 物体出现计时
+unsigned long lastTrigger = 0;    // 上次触发 ms (防重复触发)
+unsigned long lastConfigFetch = 0;
 
 // ==============================
 // 屏幕小工具
@@ -253,6 +273,70 @@ bool serverHealth() {
 }
 
 // ==============================
+// TOF200C 初始化
+// ==============================
+bool tofInit() {
+  pinMode(TOF_SHUT, OUTPUT);
+  digitalWrite(TOF_SHUT, HIGH);
+  delay(10);
+  pinMode(TOF_INT, INPUT);
+
+  Wire.begin(TOF_SDA, TOF_SCL);
+  Wire.setClock(400000);
+
+  if (!tof.begin()) {
+    Serial.println("[TOF] VL53L0X init FAIL");
+    return false;
+  }
+  Serial.println("[TOF] VL53L0X init OK");
+  return true;
+}
+
+// ==============================
+// 读取 TOF 距离 (mm), 超出范围返回 -1
+// ==============================
+int readTOF() {
+  VL53L0X_RangingMeasurementData_t m;
+  tof.rangingTest(&m, false);
+  if (m.RangeStatus != 4) return m.RangeMilliMeter;
+  return -1;
+}
+
+// ==============================
+// 从服务器拉取触发配置
+// ==============================
+void fetchTriggerConfig() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  WiFiClient client;
+  HTTPClient http;
+  String url = "http://" + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "/trigger/config";
+  http.begin(client, url);
+  http.setTimeout(3000);
+  int code = http.GET();
+  if (code == 200) {
+    String body = http.getString();
+    DynamicJsonDocument doc(512);
+    if (!deserializeJson(doc, body)) {
+      String m  = doc["mode"] | "button";
+      int    d1 = doc["distance_min"] | 30;
+      int    d2 = doc["distance_max"] | 300;
+      int    cd = doc["cooldown_ms"] | 2000;
+
+      if (m != triggerMode || d1 != distanceMin || d2 != distanceMax || cd != cooldownMs) {
+        triggerMode  = m;
+        distanceMin  = d1;
+        distanceMax  = d2;
+        cooldownMs   = cd;
+        Serial.printf("[CFG] trigger=%s range=%d-%dmm cooldown=%dms\n",
+                      triggerMode.c_str(), distanceMin, distanceMax, cooldownMs);
+        drawReady();  // 刷新屏幕显示
+      }
+    }
+  }
+  http.end();
+}
+
+// ==============================
 // 拍照 -> 转 JPEG -> 上传 -> 解析 -> 显示
 // OV3660 YUV422 -> fmt2jpg 转 JPEG
 // ==============================
@@ -428,10 +512,37 @@ void drawBoot() {
 void drawReady() {
   cls();
   txt(0, 0, 3, C_WHITE, "Ready.");
-  txt(0, 35, 1, C_WHITE, "Place item in");
-  txt(0, 47, 1, C_WHITE, "front of camera");
-  txt(0, 70, 2, C_CYAN, "Press BOOT");
-  txt(0, 95, 1, C_YELLOW, "to classify");
+
+  if (triggerMode == "distance") {
+    txt(0, 28, 1, C_CYAN, "Auto trigger");
+    txt(0, 40, 1, C_DARKGREY, "Dist:");
+    num(32, 40, 1, C_WHITE, distanceMin);
+    txt(58, 40, 1, C_DARKGREY, "-");
+    num(66, 40, 1, C_WHITE, distanceMax);
+    txt(90, 40, 1, C_DARKGREY, "mm");
+
+    int dist = readTOF();
+    txt(0, 55, 1, C_DARKGREY, "TOF:");
+    if (dist >= 0) {
+      num(28, 55, 1, C_GREEN, dist);
+      txt(52, 55, 1, C_DARKGREY, "mm");
+      // 在范围内高亮
+      if (dist >= distanceMin && dist <= distanceMax) {
+        txt(0, 68, 1, C_GREEN, "IN RANGE");
+      } else {
+        txt(0, 68, 1, C_DARKGREY, "waiting...");
+      }
+    } else {
+      txt(28, 55, 1, C_RED, "---");
+      txt(0, 68, 1, C_DARKGREY, "no target");
+    }
+  } else {
+    txt(0, 35, 1, C_WHITE, "Place item in");
+    txt(0, 47, 1, C_WHITE, "front of camera");
+    txt(0, 70, 2, C_CYAN, "Press BOOT");
+    txt(0, 95, 1, C_YELLOW, "to classify");
+  }
+
   // WiFi 状态
   int rssi = WiFi.RSSI();
   tft.setCursor(0, 120);
@@ -440,6 +551,12 @@ void drawReady() {
   tft.print("WiFi ");
   tft.print(rssi);
   tft.print("dBm");
+
+  // 触发模式标签
+  tft.setCursor(0, 134);
+  tft.setTextSize(1);
+  tft.setTextColor(C_DARKGREY);
+  tft.print(triggerMode == "distance" ? "M:Auto" : "M:Btn");
 }
 
 // ==============================
@@ -473,9 +590,17 @@ void setup() {
   if (!cameraInit()) { err("Cam FAIL"); while(1) delay(1000); }
   txt(0, 105, 1, C_GREEN, "Camera OK");
 
+  bar("TOF...");
+  if (tofInit()) txt(0, 118, 1, C_GREEN, "TOF OK");
+  else          txt(0, 118, 1, C_YELLOW, "TOF ?");
+
   bar("Server...");
-  if (serverHealth()) txt(0, 118, 1, C_GREEN, "Server OK");
-  else                txt(0, 118, 1, C_YELLOW, "Server ?");
+  if (serverHealth()) txt(0, 130, 1, C_GREEN, "Server OK");
+  else                txt(0, 130, 1, C_YELLOW, "Server ?");
+
+  // 拉取触发配置
+  fetchTriggerConfig();
+  lastConfigFetch = millis();
 
   delay(1500);
   drawReady();
@@ -483,7 +608,7 @@ void setup() {
 }
 
 // ==============================
-// loop — 等 BOOT 键触发
+// loop — 按钮触发 / TOF 距离触发
 // ==============================
 void loop() {
   // 检查 WiFi，掉了就重连
@@ -492,30 +617,93 @@ void loop() {
     txt(0, 83, 1, C_RED, "WiFi lost");
     txt(0, 95, 1, C_WHITE, "Reconnecting...");
     wifiConnect();
+    fetchTriggerConfig();
     drawReady();
   }
 
-  // 等 BOOT 按钮按下 (LOW)
-  if (digitalRead(PIN_BOOT) == LOW) {
-    delay(50);
+  // 每 30 秒同步一次触发配置
+  if (millis() - lastConfigFetch > 30000) {
+    fetchTriggerConfig();
+    lastConfigFetch = millis();
+  }
+
+  if (triggerMode == "button") {
+    // === 按钮触发 ===
     if (digitalRead(PIN_BOOT) == LOW) {
-      // 消抖通过，执行拍照+分类
-      captureAndClassify();
+      delay(50);
+      if (digitalRead(PIN_BOOT) == LOW) {
+        captureAndClassify();
+        while (digitalRead(PIN_BOOT) == LOW) delay(10);
 
-      // 等松开
-      while (digitalRead(PIN_BOOT) == LOW) delay(10);
+        // 拉取最新配置（用户可能在前端改了）
+        fetchTriggerConfig();
+        lastConfigFetch = millis();
 
-      // 5 秒冷却，显示倒计时
-      for (int i = 5; i > 0; i--) {
-        tft.fillRect(0, 140, 128, 20, C_BLACK);
-        tft.setCursor(50, 144);
-        tft.setTextSize(1);
-        tft.setTextColor(C_DARKGREY);
-        tft.print(i);
-        tft.print("s...");
-        delay(1000);
+        for (int i = 5; i > 0; i--) {
+          tft.fillRect(0, 140, 128, 20, C_BLACK);
+          tft.setCursor(50, 144);
+          tft.setTextSize(1);
+          tft.setTextColor(C_DARKGREY);
+          tft.print(i);
+          tft.print("s...");
+          delay(1000);
+        }
+        drawReady();
       }
-      drawReady();
+    }
+  } else {
+    // === 距离触发 ===
+    int dist = readTOF();
+
+    // 刷新屏幕上的 TOF 读数
+    if (millis() % 500 < 10) {
+      tft.fillRect(28, 55, 50, 10, C_BLACK);
+      if (dist >= 0) {
+        num(28, 55, 1, C_GREEN, dist);
+        if (dist >= distanceMin && dist <= distanceMax) {
+          txt(0, 68, 1, C_GREEN, "IN RANGE ");
+        } else {
+          txt(0, 68, 1, C_DARKGREY, "waiting...");
+        }
+      } else {
+        txt(28, 55, 1, C_RED, "---");
+        txt(0, 68, 1, C_DARKGREY, "no target");
+      }
+    }
+
+    if (dist >= distanceMin && dist <= distanceMax) {
+      // 物体在范围内
+      unsigned long now = millis();
+      if (presenceStart == 0) {
+        presenceStart = now;
+      } else if (now - presenceStart >= (unsigned long)cooldownMs
+                 && now - lastTrigger > 3000) {
+        // 物体稳定在范围内超过 cooldown，且距上次触发 > 3s → 触发
+        lastTrigger = now;
+        presenceStart = 0;
+
+        bar("Auto capture!");
+        delay(300);
+        captureAndClassify();
+
+        // 拉取最新配置
+        fetchTriggerConfig();
+        lastConfigFetch = millis();
+
+        // 等待物体移开
+        int waitLoops = 0;
+        while (waitLoops < 200) {  // 最多等 10 秒
+          int d2 = readTOF();
+          if (d2 < distanceMin || d2 > distanceMax) break;
+          delay(50);
+          waitLoops++;
+        }
+        delay(500);
+        drawReady();
+      }
+    } else {
+      // 物体不在范围内，重置计时
+      presenceStart = 0;
     }
   }
   delay(30);

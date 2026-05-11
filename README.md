@@ -9,6 +9,7 @@
 | MCU | ESP32-S3-WROOM-1-N16R8 |
 | 摄像头 | OV3660 (3MP, FPC 接口) |
 | 屏幕 | ST7735S 1.8" 128×160 RGB-TFT |
+| 激光测距 | TOF200C VL53L0X (I2C, 最大 2m) |
 
 ### 屏幕接线 (软件 SPI)
 
@@ -23,15 +24,28 @@
 | CS   | GPIO 40 |
 | BLK  | GPIO 41 |
 
+### TOF200C 接线 (I2C)
+
+| TOF200C | ESP32 |
+|---------|-------|
+| VIN     | 3.3V  |
+| GND     | GND   |
+| SDA     | GPIO 47 |
+| SCL     | GPIO 21 |
+| INT     | GPIO 48 |
+| SHUT    | GPIO 45 |
+
 ### 操作方式
 
-- **短按 BOOT 键** (GPIO 0)：拍照并识别
+- **按键触发**：短按 BOOT 键 (GPIO 0) 拍照并识别
+- **距离触发**：TOF 检测到物体在设定距离范围内稳定超过缓冲时间后自动触发（前端可配置）
 
 ## 项目结构
 
 ```
 ├── firmware/esp32s3_garbage_classifier/
-│   └── esp32s3_garbage_classifier.ino   # ESP32-S3 固件
+│   ├── esp32s3_garbage_classifier.ino   # ESP32-S3 固件
+│   └── test_tof200c/                    # TOF200C 激光测距模块测试
 ├── backend/
 │   ├── server.py                        # FastAPI 后端 (CLIP + Vision LLM + YOLO)
 │   ├── requirements.txt                 # Python 依赖
@@ -92,6 +106,7 @@ const int   SERVER_PORT   = 8085;
    - **esp32** by Espressif (≥ 2.0.14)
    - **Adafruit GFX Library**
    - **Adafruit ST7735 and ST7789 Library**
+   - **Adafruit VL53L0X Library**
    - **ArduinoJson** by Benoit Blanchon
 
 3. 开发板设置：
@@ -135,6 +150,8 @@ const int   SERVER_PORT   = 8085;
 | POST | `/hardware/capture` | ESP32 上传采集图片 |
 | GET  | `/hardware/image` | 获取最新硬件采集图片 (image/jpeg) |
 | GET  | `/hardware/status` | 硬件状态 (在线/IP/采集次数/固件版本) |
+| GET  | `/trigger/config` | 获取触发配置 (模式/距离范围/缓冲时间) |
+| POST | `/trigger/config` | 设置触发配置 |
 
 ## 前端功能模块
 
@@ -178,6 +195,16 @@ const int   SERVER_PORT   = 8085;
 | 视觉 API | OpenAI-compatible format (豆包/千问/自定义) |
 
 ## 变更日志
+
+### v4.0.0
+- **TOF200C VL53L0X 激光测距模块**：新增 TOF 距离传感器支持，实现自动触发拍照
+- **双触发模式**：BOOT 按键触发 + TOF 距离感应自动触发，前端可随时切换
+- **触发参数配置**：距离范围（最小/最大触发距离 mm）+ 缓冲时间（ms），前端滑块与数值输入双控
+- **响应时间显示**：每次识别显示服务端响应耗时（ms），结果与历史记录均可查看
+- **前端布局重构**：左侧窄导航栏 + 右侧主内容区，微软雅黑字体，专业扁平化风格
+- **双输入交互**：所有参数同时支持滑块拖拽与手动数字输入
+- **触发配置 API**：新增 `GET/POST /trigger/config` 端点，固件定期拉取同步
+- **test_tof200c 测试固件**：独立 TOF 模块功能验证，I2C 扫描 + 连续测距
 
 ### v3.0.0
 - **视觉大模型集成**：后端支持豆包 Vision、千问 Vision、自定义 OpenAI 兼容模型

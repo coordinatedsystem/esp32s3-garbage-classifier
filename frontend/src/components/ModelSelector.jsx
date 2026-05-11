@@ -111,21 +111,21 @@ export default function ModelSelector({ mode, setMode, disabled }) {
   const currentModel = models?.find(m => m.id === displayModel)
 
   return (
-    <div className="glass-card rounded-[2.5rem] p-6 lg:p-8">
+    <div className="bg-white rounded-2xl border border-zinc-200 p-5">
       {/* 标题 */}
-      <div className="flex items-center justify-between mb-5">
+      <div className="flex items-center justify-between mb-4">
         <div className="flex items-center gap-3">
-          <div className="w-11 h-11 rounded-2xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center shadow-lg shadow-amber-200">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-amber-400 to-orange-500 flex items-center justify-center">
             <Flask weight="fill" className="w-5 h-5 text-white" />
           </div>
           <div>
-            <h2 className="text-lg font-bold text-zinc-800">识别引擎</h2>
-            <p className="text-[11px] text-zinc-400">
+            <h2 className="text-base font-bold text-zinc-800">识别引擎</h2>
+            <p className="text-sm text-zinc-500">
               {isClassifyModel ? 'ESP32 同步跟随' : '网页端专用'}
             </p>
           </div>
         </div>
-        <div className={`px-4 py-2 rounded-full text-sm font-semibold bg-gradient-to-r ${currentMeta.gradient} text-white shadow-md`}>
+        <div className={`px-4 py-2 rounded-full text-sm font-semibold bg-gradient-to-r ${currentMeta.gradient} text-white`}>
           {currentMeta.name}
         </div>
       </div>
@@ -144,7 +144,7 @@ export default function ModelSelector({ mode, setMode, disabled }) {
               key={m}
               onClick={() => handleTabClick(m)}
               disabled={disabled}
-              className={`relative flex-shrink-0 px-4 py-2.5 rounded-xl text-[13px] font-semibold spring-transition ${
+              className={`relative flex-shrink-0 px-4 py-2.5 rounded-xl text-sm font-semibold spring-transition ${
                 isActive ? 'text-white' : 'text-zinc-500 hover:text-zinc-700'
               }`}
             >
@@ -180,7 +180,7 @@ export default function ModelSelector({ mode, setMode, disabled }) {
             className="overflow-hidden"
           >
             <div className="mb-4 p-3 rounded-2xl bg-indigo-50 border border-indigo-100 flex items-center justify-between">
-              <span className="text-[13px] font-semibold text-indigo-700">
+              <span className="text-sm font-semibold text-indigo-700">
                 切换至 {modeMeta[pendingModel].name}？
                 {pendingModel !== 'detect' && ' ESP32 将同步跟随。'}
               </span>
@@ -222,25 +222,25 @@ export default function ModelSelector({ mode, setMode, disabled }) {
             <div className="flex-1 min-w-0">
               <div className="flex items-center gap-2 mb-0.5">
                 <h3 className="text-sm font-bold text-zinc-800">{currentMeta.name}</h3>
-                <span className={`px-2 py-0.5 rounded-full text-[10px] font-semibold ${currentMeta.bg} ${currentMeta.text}`}>
+                <span className={`px-2 py-0.5 rounded-full text-xs font-semibold ${currentMeta.bg} ${currentMeta.text}`}>
                   {currentMeta.type}
                 </span>
                 {isClassifyModel && (
-                  <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-600 text-[10px] font-semibold flex items-center gap-1">
+                  <span className="px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-600 text-xs font-semibold flex items-center gap-1">
                     <WifiHigh weight="bold" className="w-2.5 h-2.5" />
                     ESP32
                   </span>
                 )}
                 {displayModel === 'detect' && (
-                  <span className="px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-500 text-[10px] font-semibold flex items-center gap-1">
+                  <span className="px-2 py-0.5 rounded-full bg-zinc-100 text-zinc-500 text-xs font-semibold flex items-center gap-1">
                     <Browser weight="bold" className="w-2.5 h-2.5" />
                     Web Only
                   </span>
                 )}
               </div>
-              <p className="text-[11px] text-zinc-500 leading-relaxed mt-1">{currentMeta.desc}</p>
+              <p className="text-sm text-zinc-500 leading-relaxed mt-1">{currentMeta.desc}</p>
               {currentModel && (
-                <div className="flex items-center gap-4 mt-2 text-[11px] text-zinc-400">
+                <div className="flex items-center gap-4 mt-2 text-sm text-zinc-400">
                   {currentModel.labels_count > 0 && (
                     <span className="flex items-center gap-1">
                       <Info weight="bold" className="w-3 h-3" />
@@ -260,7 +260,7 @@ export default function ModelSelector({ mode, setMode, disabled }) {
             <>
               <button
                 onClick={openConfig}
-                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-[11px] font-medium spring-transition ${
+                className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium spring-transition ${
                   currentModel?.configured
                     ? 'bg-emerald-100 text-emerald-600 hover:bg-emerald-200'
                     : 'bg-amber-100 text-amber-600 hover:bg-amber-200'
@@ -279,7 +279,7 @@ export default function ModelSelector({ mode, setMode, disabled }) {
                     className="mt-3 space-y-2 overflow-hidden"
                   >
                     <div>
-                      <label className="text-[10px] text-zinc-500 font-semibold">API Key</label>
+                      <label className="text-xs text-zinc-500 font-semibold">API Key</label>
                       <input
                         type="password"
                         value={configForm.api_key}
@@ -289,7 +289,7 @@ export default function ModelSelector({ mode, setMode, disabled }) {
                       />
                     </div>
                     <div>
-                      <label className="text-[10px] text-zinc-500 font-semibold">API Base URL</label>
+                      <label className="text-xs text-zinc-500 font-semibold">API Base URL</label>
                       <input
                         type="text"
                         value={configForm.api_base}
@@ -299,7 +299,7 @@ export default function ModelSelector({ mode, setMode, disabled }) {
                       />
                     </div>
                     <div>
-                      <label className="text-[10px] text-zinc-500 font-semibold">Model Name</label>
+                      <label className="text-xs text-zinc-500 font-semibold">Model Name</label>
                       <input
                         type="text"
                         value={configForm.model}
@@ -322,7 +322,7 @@ export default function ModelSelector({ mode, setMode, disabled }) {
                         取消
                       </button>
                       {configMsg && (
-                        <span className={`text-[11px] ${configMsg.startsWith('Error') ? 'text-red-500' : 'text-emerald-500'}`}>
+                        <span className={`text-sm ${configMsg.startsWith('Error') ? 'text-red-500' : 'text-emerald-500'}`}>
                           {configMsg}
                         </span>
                       )}

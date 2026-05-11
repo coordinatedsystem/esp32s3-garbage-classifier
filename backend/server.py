@@ -227,6 +227,13 @@ server_history = []
 HISTORY_MAX = 50
 active_classify_model = "clip"  # 当前分类模型: clip / doubao / qwen / custom
 
+trigger_config = {
+    "mode": "button",       # "button" | "distance"
+    "distance_min": 30,     # mm, 最小触发距离
+    "distance_max": 300,    # mm, 最大触发距离
+    "cooldown_ms": 2000     # ms, 触发缓冲时间 (物体需稳定在范围内的时间)
+}
+
 
 def _make_thumbnail(image_data: bytes, max_edge: int = 320) -> str:
     """将图片转为缩略图 base64 data URL"""
@@ -262,7 +269,7 @@ def _add_history(mode: str, data: dict, image_data: bytes):
 
 
 # ===================== FastAPI 初始化 =====================
-app = FastAPI(title="物品识别API", version="3.0.0")
+app = FastAPI(title="物品识别API", version="4.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 # ===================== 核心加速（无编译，100%兼容Windows） =====================
@@ -357,6 +364,7 @@ async def classify_image(
     model: str = Query(""),   # 可选：覆盖当前激活的分类模型
     background_tasks: BackgroundTasks = None
 ):
+    t_start = time.time()
     try:
         image_data = await file.read()
         classify_model = model if model else active_classify_model
@@ -372,7 +380,7 @@ async def classify_image(
                 hardware_state["ip_address"] = ip or hardware_state.get("ip_address", "")
                 hardware_state["capture_count"] += 1
                 hardware_state["device_id"] = "ESP32-S3"
-                hardware_state["firmware_version"] = hardware_state.get("firmware_version") or "3.0.0"
+                hardware_state["firmware_version"] = hardware_state.get("firmware_version") or "4.0.0"
             print(f"[硬件] ESP32 已上线 ip={ip} captures={hardware_state['capture_count']}")
 
         # 按模型路由
@@ -415,6 +423,9 @@ async def classify_image(
         else:
             raise HTTPException(status_code=400, detail=f"Unknown model: {classify_model}")
 
+        response_time_ms = int((time.time() - t_start) * 1000)
+        result_data["response_time_ms"] = response_time_ms
+
         if background_tasks:
             background_tasks.add_task(_add_history, "classify", result_data, image_data)
         else:
@@ -423,6 +434,7 @@ async def classify_image(
         return {
             "success": True,
             "result": result_data,
+            "response_time_ms": response_time_ms,
             "message": f"识别结果：{result_data['item_label_zh']} 置信度：{result_data['confidence'] * 100:.1f}%"
         }
 
@@ -439,6 +451,8 @@ async def health():
     with state_lock:
         hw_online = hardware_state["online"]
         capture_count = hardware_state["capture_count"]
+    with state_lock:
+        tc = dict(trigger_config)
     return {
         "status": "healthy",
         "uptime_seconds": round(uptime, 1),
@@ -447,7 +461,8 @@ async def health():
         "hardware_captures": capture_count,
         "device": device,
         "clip_labels": len(TEXT_PROMPTS),
-        "active_model": active_classify_model
+        "active_model": active_classify_model,
+        "trigger_config": tc
     }
 
 
@@ -505,6 +520,40 @@ async def set_active_model(model: str = Query(...)):
         raise HTTPException(status_code=400, detail=f"Unknown model: {model}. Valid: {valid}")
     active_classify_model = model
     return {"active": active_classify_model, "message": f"Active model set to '{model}'"}
+
+
+# ===================== 触发配置接口 =====================
+
+class TriggerConfigBody(BaseModel):
+    mode: str = "button"       # "button" | "distance"
+    distance_min: int = 30     # mm
+    distance_max: int = 300    # mm
+    cooldown_ms: int = 2000    # ms
+
+
+@app.get("/trigger/config")
+async def get_trigger_config():
+    with state_lock:
+        return dict(trigger_config)
+
+
+@app.post("/trigger/config")
+async def set_trigger_config(body: TriggerConfigBody):
+    if body.mode not in ("button", "distance"):
+        raise HTTPException(status_code=400, detail="mode must be 'button' or 'distance'")
+    if body.distance_min < 0 or body.distance_max > 2000:
+        raise HTTPException(status_code=400, detail="distance range must be 0-2000 mm")
+    if body.distance_min >= body.distance_max:
+        raise HTTPException(status_code=400, detail="distance_min must be < distance_max")
+    if body.cooldown_ms < 0 or body.cooldown_ms > 30000:
+        raise HTTPException(status_code=400, detail="cooldown_ms must be 0-30000 ms")
+    with state_lock:
+        trigger_config["mode"] = body.mode
+        trigger_config["distance_min"] = body.distance_min
+        trigger_config["distance_max"] = body.distance_max
+        trigger_config["cooldown_ms"] = body.cooldown_ms
+    print(f"[trigger] config updated: mode={body.mode} range={body.distance_min}-{body.distance_max}mm cooldown={body.cooldown_ms}ms")
+    return {"message": "Trigger config updated", "config": dict(trigger_config)}
 
 
 # ===================== YOLO 检测接口 =====================
@@ -663,7 +712,7 @@ async def clear_history():
 async def hardware_capture(
     file: UploadFile = File(...),
     device_id: str = Query("ESP32-S3"),
-    firmware_version: str = Query("3.0.0"),
+    firmware_version: str = Query("4.0.0"),
     ip_address: str = Query("unknown")
 ):
     """ESP32-S3 上传采集图片"""

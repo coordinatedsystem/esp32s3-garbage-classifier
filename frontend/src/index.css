@@ -8,7 +8,12 @@
   }
 
   body {
-    @apply min-h-[100dvh] bg-[#fafafa] text-zinc-900 antialiased;
+    @apply min-h-[100dvh] bg-[#f8f8f8] text-zinc-900 antialiased;
+    font-family: "Microsoft YaHei", "微软雅黑", "PingFang SC", "Noto Sans SC", "Helvetica Neue", sans-serif;
+    font-weight: 500;
+    font-size: 15px;
+    line-height: 1.6;
+    -webkit-font-smoothing: antialiased;
   }
 
   ::selection {

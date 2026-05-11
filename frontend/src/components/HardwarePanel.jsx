@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
-import { Cpu, Camera, ClockCounterClockwise, WifiHigh, WifiX, ImageSquare, Info, Microscope, Lightning, Circle, Tray } from '@phosphor-icons/react'
-import { getHardwareStatus, getHardwareImageUrl } from '../api'
+import { Cpu, Camera, ClockCounterClockwise, WifiHigh, Info, ImageSquare, Lightning, HandPointing, Ruler, Timer, Check } from '@phosphor-icons/react'
+import { getHardwareStatus, getHardwareImageUrl, getTriggerConfig, setTriggerConfig } from '../api'
 import usePolling from '../hooks/usePolling'
 
 export default function HardwarePanel() {
@@ -11,6 +11,42 @@ export default function HardwarePanel() {
 
   const fetchStatus = useCallback(() => getHardwareStatus(), [])
   const { data: status, loading } = usePolling(fetchStatus, { interval: 6000 })
+
+  // 触发配置
+  const [trigMode, setTrigMode] = useState('button')
+  const [trigMin, setTrigMin] = useState(30)
+  const [trigMax, setTrigMax] = useState(300)
+  const [trigCooldown, setTrigCooldown] = useState(2000)
+  const [trigSaving, setTrigSaving] = useState(false)
+  const [trigMsg, setTrigMsg] = useState('')
+
+  useEffect(() => {
+    getTriggerConfig().then(cfg => {
+      setTrigMode(cfg.mode || 'button')
+      setTrigMin(cfg.distance_min ?? 30)
+      setTrigMax(cfg.distance_max ?? 300)
+      setTrigCooldown(cfg.cooldown_ms ?? 2000)
+    }).catch(() => {})
+  }, [])
+
+  const handleTrigSave = async () => {
+    setTrigSaving(true)
+    setTrigMsg('')
+    try {
+      const res = await setTriggerConfig({
+        mode: trigMode,
+        distance_min: Number(trigMin),
+        distance_max: Number(trigMax),
+        cooldown_ms: Number(trigCooldown)
+      })
+      setTrigMsg(res.message || '已保存')
+      setTimeout(() => setTrigMsg(''), 2000)
+    } catch (e) {
+      setTrigMsg('错误: ' + e.message)
+    } finally {
+      setTrigSaving(false)
+    }
+  }
 
   useEffect(() => {
     if (status && status.capture_count !== undefined) {
@@ -68,50 +104,160 @@ export default function HardwarePanel() {
 
       {/* 状态卡片网格 */}
       <div className="grid grid-cols-2 lg:grid-cols-4 gap-3 mb-5">
-        {/* 连接状态 */}
         <div className="rounded-2xl bg-zinc-50 p-4 border border-zinc-100">
           <div className="flex items-center gap-2 mb-2">
             <WifiHigh weight="bold" className={`w-4 h-4 ${online ? 'text-emerald-500' : 'text-zinc-300'}`} />
-            <span className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">连接</span>
+            <span className="text-xs font-medium text-zinc-400 uppercase tracking-wider">连接</span>
           </div>
           <p className={`text-lg font-bold ${online ? 'text-emerald-600' : 'text-zinc-400'}`}>
             {online ? '已连接' : '未连接'}
           </p>
-          <p className="text-[10px] text-zinc-400 mt-0.5">
+          <p className="text-xs text-zinc-400 mt-0.5">
             {online && status?.ip_address ? `IP ${status.ip_address}` : '等待设备接入'}
           </p>
         </div>
 
-        {/* 采集次数 */}
         <div className="rounded-2xl bg-zinc-50 p-4 border border-zinc-100">
           <div className="flex items-center gap-2 mb-2">
             <Camera weight="bold" className="w-4 h-4 text-indigo-400" />
-            <span className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">采集</span>
+            <span className="text-xs font-medium text-zinc-400 uppercase tracking-wider">采集</span>
           </div>
           <p className="text-lg font-bold text-zinc-800">{status?.capture_count ?? 0}</p>
-          <p className="text-[10px] text-zinc-400 mt-0.5">累计拍照次数</p>
+          <p className="text-xs text-zinc-400 mt-0.5">累计拍照次数</p>
         </div>
 
-        {/* 最后活跃 */}
         <div className="rounded-2xl bg-zinc-50 p-4 border border-zinc-100">
           <div className="flex items-center gap-2 mb-2">
             <ClockCounterClockwise weight="bold" className="w-4 h-4 text-amber-400" />
-            <span className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">活跃</span>
+            <span className="text-xs font-medium text-zinc-400 uppercase tracking-wider">活跃</span>
           </div>
           <p className="text-lg font-bold text-zinc-800">{ago(secondsSinceCapture)}</p>
-          <p className="text-[10px] text-zinc-400 mt-0.5 truncate">
+          <p className="text-xs text-zinc-400 mt-0.5 truncate">
             {lastCapture ? lastCapture.toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit' }) : '尚无数据'}
           </p>
         </div>
 
-        {/* 固件版本 */}
         <div className="rounded-2xl bg-zinc-50 p-4 border border-zinc-100">
           <div className="flex items-center gap-2 mb-2">
             <Info weight="bold" className="w-4 h-4 text-violet-400" />
-            <span className="text-[11px] font-medium text-zinc-400 uppercase tracking-wider">固件</span>
+            <span className="text-xs font-medium text-zinc-400 uppercase tracking-wider">固件</span>
           </div>
           <p className="text-lg font-bold text-zinc-800">{status?.firmware_version || '—'}</p>
-          <p className="text-[10px] text-zinc-400 mt-0.5">{status?.device_id || 'ESP32-S3'}</p>
+          <p className="text-xs text-zinc-400 mt-0.5">{status?.device_id || 'ESP32-S3'}</p>
+        </div>
+      </div>
+
+      {/* ====== 触发配置 ====== */}
+      <div className="mb-5 rounded-2xl bg-zinc-50 border border-zinc-200 p-5">
+        <div className="flex items-center gap-2 mb-4">
+          <HandPointing weight="bold" className="w-5 h-5 text-amber-500" />
+          <span className="text-base font-bold text-zinc-800">触发方式</span>
+        </div>
+
+        {/* 模式切换 */}
+        <div className="flex rounded-xl bg-white border border-zinc-200 p-1 mb-4">
+          <button
+            onClick={() => setTrigMode('button')}
+            className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all ${
+              trigMode === 'button' ? 'bg-indigo-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700'
+            }`}
+          >
+            <HandPointing weight="bold" className="w-4 h-4" />
+            按键触发
+          </button>
+          <button
+            onClick={() => setTrigMode('distance')}
+            className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all ${
+              trigMode === 'distance' ? 'bg-indigo-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700'
+            }`}
+          >
+            <Ruler weight="bold" className="w-4 h-4" />
+            距离触发
+          </button>
+        </div>
+
+        {/* 距离模式参数 */}
+        {trigMode === 'distance' && (
+          <motion.div
+            initial={{ opacity: 0, height: 0 }}
+            animate={{ opacity: 1, height: 'auto' }}
+            className="space-y-4 overflow-hidden"
+          >
+            {/* 最小距离 */}
+            <div>
+              <label className="text-sm font-semibold text-zinc-600 mb-1.5 block">最小触发距离 (mm)</label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range" min="0" max="1000" value={trigMin}
+                  onChange={e => { const v = Number(e.target.value); if (v < trigMax) setTrigMin(v) }}
+                  className="flex-1 h-2 rounded-full appearance-none bg-zinc-200 accent-indigo-500 cursor-pointer"
+                />
+                <input
+                  type="number" min="0" max="1000" value={trigMin}
+                  onChange={e => { const v = Number(e.target.value); if (v > 0 && v < trigMax) setTrigMin(v) }}
+                  className="w-20 px-3 py-1.5 rounded-lg border border-zinc-300 text-sm font-mono text-center focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-400"
+                />
+              </div>
+            </div>
+
+            {/* 最大距离 */}
+            <div>
+              <label className="text-sm font-semibold text-zinc-600 mb-1.5 block">最大触发距离 (mm)</label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range" min="10" max="2000" value={trigMax}
+                  onChange={e => { const v = Number(e.target.value); if (v > trigMin) setTrigMax(v) }}
+                  className="flex-1 h-2 rounded-full appearance-none bg-zinc-200 accent-indigo-500 cursor-pointer"
+                />
+                <input
+                  type="number" min="10" max="2000" value={trigMax}
+                  onChange={e => { const v = Number(e.target.value); if (v < 2001 && v > trigMin) setTrigMax(v) }}
+                  className="w-20 px-3 py-1.5 rounded-lg border border-zinc-300 text-sm font-mono text-center focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-400"
+                />
+              </div>
+            </div>
+
+            {/* 缓冲时间 */}
+            <div>
+              <label className="text-sm font-semibold text-zinc-600 mb-1.5 block">
+                <Timer weight="bold" className="w-4 h-4 inline mr-1" />
+                触发缓冲时间 (ms)
+              </label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range" min="0" max="5000" step="100" value={trigCooldown}
+                  onChange={e => setTrigCooldown(Number(e.target.value))}
+                  className="flex-1 h-2 rounded-full appearance-none bg-zinc-200 accent-indigo-500 cursor-pointer"
+                />
+                <input
+                  type="number" min="0" max="5000" step="100" value={trigCooldown}
+                  onChange={e => { const v = Number(e.target.value); if (v >= 0 && v <= 5000) setTrigCooldown(v) }}
+                  className="w-20 px-3 py-1.5 rounded-lg border border-zinc-300 text-sm font-mono text-center focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-400"
+                />
+              </div>
+            </div>
+
+            <p className="text-sm text-zinc-500">
+              物体在范围内稳定超过缓冲时间后自动触发拍照
+            </p>
+          </motion.div>
+        )}
+
+        {/* 保存按钮 */}
+        <div className="flex items-center gap-3 mt-4 pt-3 border-t border-zinc-200">
+          <button
+            onClick={handleTrigSave}
+            disabled={trigSaving}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-semibold transition-all hover:bg-indigo-700 active:scale-[0.98] disabled:opacity-50"
+          >
+            <Check weight="bold" className="w-4 h-4" />
+            {trigSaving ? '保存中...' : '保存到设备'}
+          </button>
+          {trigMsg && (
+            <span className={`text-sm ${trigMsg.startsWith('错误') ? 'text-red-500' : 'text-emerald-600'}`}>
+              {trigMsg}
+            </span>
+          )}
         </div>
       </div>
 
@@ -134,15 +280,14 @@ export default function HardwarePanel() {
               <p className="text-sm font-medium text-zinc-400">
                 {online ? '等待新图像...' : '设备离线 — 等待 ESP32-S3 连接'}
               </p>
-              <p className="text-[10px] text-zinc-300 mt-1">
-                {online ? '按下设备 BOOT 键触发采集' : '请检查设备电源与网络连接'}
+              <p className="text-xs text-zinc-300 mt-1">
+                {online ? (trigMode === 'distance' ? '设备将自动检测距离触发采集' : '按下设备 BOOT 键触发采集') : '请检查设备电源与网络连接'}
               </p>
             </div>
           </div>
         )}
-        {/* 图像标签 */}
         {online && !imgError && (
-          <div className="absolute top-3 left-3 px-3 py-1.5 rounded-full bg-black/40 backdrop-blur-sm text-white text-[11px] font-medium">
+          <div className="absolute top-3 left-3 px-3 py-1.5 rounded-full bg-black/40 backdrop-blur-sm text-white text-xs font-medium">
             最新采集
           </div>
         )}
@@ -151,8 +296,8 @@ export default function HardwarePanel() {
       {/* 底部提示 */}
       <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-indigo-50/50">
         <Lightning weight="fill" className="w-3.5 h-3.5 text-indigo-400" />
-        <p className="text-[11px] text-indigo-500 font-medium">
-          硬件状态每 6 秒自动刷新 · 按下设备 BOOT 键触发图像采集与识别
+        <p className="text-xs text-indigo-500 font-medium">
+          硬件状态每 6 秒自动刷新 · {trigMode === 'distance' ? 'TOF 距离自动触发 · ESP32 每 30 秒同步配置' : '按下设备 BOOT 键触发图像采集与识别'}
         </p>
       </div>
     </motion.div>
