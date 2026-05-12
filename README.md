@@ -52,17 +52,16 @@
 │   └── clip_model/                      # CLIP 模型 (~580MB, 需自行下载)
 ├── frontend/
 │   ├── src/
-│   │   ├── App.jsx                      # 主布局
+│   │   ├── App.jsx                      # 主布局 (侧栏导航 + 系统状态 + 面板路由)
 │   │   ├── api.js                       # API 聚合层
 │   │   ├── hooks/usePolling.js          # 轮询 Hook
 │   │   └── components/
-│   │       ├── HardwarePanel.jsx        # 硬件状态面板
-│   │       ├── ModelSelector.jsx        # 5 模型统一选择器
-│   │       ├── UploadPanel.jsx          # 本地上传面板
-│   │       ├── ResultsDisplay.jsx       # 识别结果 + 置信度分析
-│   │       ├── ConfidenceGauge.jsx      # 置信度动画仪表
-│   │       ├── HistoryList.jsx          # 历史记录列表
-│   │       └── StatusBar.jsx            # 系统状态栏
+│   │       ├── HardwarePanel.jsx        # 硬件状态 + 触发配置 + 采集预览
+│   │       ├── ModelSelector.jsx        # 5 模型选择器 + API Key 配置
+│   │       ├── UploadPanel.jsx          # 图片拖拽/上传
+│   │       ├── ResultsDisplay.jsx       # 分类/检测结果 + 置信度
+│   │       ├── ConfidenceGauge.jsx      # SVG 环形置信度仪表
+│   │       └── HistoryList.jsx          # 历史记录 (分类筛选 + 触发来源)
 │   ├── index.html
 │   ├── package.json
 │   └── vite.config.js
@@ -125,14 +124,18 @@ const int   SERVER_PORT   = 8085;
 │   ESP32-S3   │ ──── classify ────▶│   FastAPI    │◀──── /health ───│   React SPA  │
 │  OV3660      │                    │   CLIP /     │                 │   Dashboard  │
 │  ST7735      │◀─── JSON result ── │   Vision LLM │─── /history ──▶│   :5173      │
+│  VL53L0X     │                    │   YOLO       │                 │              │
 └──────────────┘                    │   :8085      │                 └──────────────┘
      │                                      │                              │
-     │ 硬件采集 POST /classify              │ 共享状态 (threading.Lock)     │ usePolling 每 6s
-     │ ?source=esp32&ip=<ip>               │ 多模型路由 + 自动回退        │ 轮询 /health
-     └──────────────────────────────────────┘                              │ /hardware/status
+     │ POST /classify?source=esp32          │ 共享状态 (threading.Lock)     │ 左侧 220px 导航栏
+     │ GET  /trigger/config?source=esp32    │ 多模型路由 + 自动回退        │  └ 系统状态卡片
+     │ (每 30s, 兼作心跳)                   │                             │ usePolling 每 10s
+     └──────────────────────────────────────┘                             │ 轮询 /health
 ```
 
-**模型路由**：前端 `POST /model/active` 设置服务端激活模型 → ESP32 始终调用 `/classify` → 后端按激活模型路由（CLIP / 豆包 / 千问 / 自定义）。ESP32 无需刷写固件即可跟随前端模型切换。视觉模型未配置或调用失败时自动回退到 CLIP。
+**模型路由**：前端设置激活模型 → ESP32 始终调用 `/classify` → 后端按激活模型路由（CLIP / 豆包 / 千问 / 自定义）。ESP32 无需刷写固件即可跟随前端模型切换。视觉模型未配置或调用失败时自动回退到 CLIP。
+
+**硬件在线检测**：ESP32 每 30 秒拉取 `/trigger/config?source=esp32` 兼作心跳。服务端记录 `last_seen` 时间戳，超过 60 秒无心跳则判定离线。
 
 ## API 接口
 
@@ -150,20 +153,20 @@ const int   SERVER_PORT   = 8085;
 | POST | `/hardware/capture` | ESP32 上传采集图片 |
 | GET  | `/hardware/image` | 获取最新硬件采集图片 (image/jpeg) |
 | GET  | `/hardware/status` | 硬件状态 (在线/IP/采集次数/固件版本) |
-| GET  | `/trigger/config` | 获取触发配置 (模式/距离范围/缓冲时间) |
+| GET  | `/trigger/config` | 获取触发配置。`?source=esp32` 兼作硬件心跳 |
 | POST | `/trigger/config` | 设置触发配置 |
 
 ## 前端功能模块
 
 | 模块 | 说明 |
 |------|------|
-| **StatusBar** | 服务在线状态 + 延迟 / 硬件连接 / 运行时间 / 标签总数 / 激活模型 |
-| **HardwarePanel** | 硬件四维度状态卡片 + 最新采集图像 16:9 预览 |
-| **ModelSelector** | 5 模型统一标签栏 (CLIP/豆包/千问/自定义/YOLO)，两步确认切换，视觉模型 API Key 配置 |
+| **App (侧栏)** | 左侧 220px 导航栏集成系统状态（服务/硬件在线、当前模型、触发模式），10 秒轮询刷新 |
+| **HardwarePanel** | 硬件四维度卡片（连接/采集/活动/固件）+ 触发配置（模式/距离/间隔）+ 实时采集预览 |
+| **ModelSelector** | 5 模型标签栏（CLIP/豆包/千问/自定义/YOLO），两步确认切换，独立 API Key 配置 |
 | **UploadPanel** | 拖拽/点击上传本地图片，自动路由到当前激活模型 |
-| **ResultsDisplay** | 结果判定 + 置信度仪表 + 垃圾分类说明 + 模型名称 |
-| **ConfidenceGauge** | SVG 动画环形置信度仪表 (≥80%绿 ≥50%黄 <50%红) |
-| **HistoryList** | 服务端历史记录，按模式筛选，显示实际使用的模型 |
+| **ResultsDisplay** | 分类结果 + 置信度仪表 + 垃圾类别说明 + 模型名称 |
+| **ConfidenceGauge** | SVG 动画环形置信度仪表（≥80% 绿 / ≥50% 黄 / <50% 红） |
+| **HistoryList** | 服务端历史记录，按分类筛选，显示触发来源标签（按键/距离触发） |
 
 ## 识别模型
 
@@ -195,6 +198,14 @@ const int   SERVER_PORT   = 8085;
 | 视觉 API | OpenAI-compatible format (豆包/千问/自定义) |
 
 ## 变更日志
+
+### v4.1.0
+- **侧栏重新设计**：左侧导航栏扩展至 220px，集成系统状态卡片（服务在线、硬件心跳、当前模型、触发模式），实时轮播刷新
+- **硬件心跳检测**：ESP32 每 30 秒 `/trigger/config?source=esp32` 兼作心跳，服务端超时 60 秒自动判定离线
+- **移除顶部状态栏**：StatusBar 组件废弃，系统状态信息整合至侧栏
+- **面板保持挂载**：标签页切换改为 `hidden` 显隐，不再卸载重载，消除切换延迟
+- **代码整理**：`hardware_capture` 去重调用 `_add_history`、修复 `trigger_config` 竞态条件、setTimeout 清理、API Key 表单隔离、字体统一
+- **触发来源显示**：历史记录显示按键触发 / 距离触发标签
 
 ### v4.0.1
 - **可配置触发间隔**：新增最小触发间隔参数（1–60s，默认 10s），防止 TOF 距离触发过于频繁导致屏幕闪烁

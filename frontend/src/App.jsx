@@ -163,7 +163,7 @@ export default function App() {
 
           {/* 底部版本 */}
           <div className="px-4 py-3 border-t border-zinc-100">
-            <p className="text-[10px] text-zinc-400">v4.0.1</p>
+            <p className="text-[10px] text-zinc-400">v4.1.0</p>
           </div>
         </nav>
 
