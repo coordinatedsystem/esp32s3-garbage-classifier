@@ -207,14 +207,13 @@ export default function ModelSelector({ mode, setMode, disabled }) {
       </AnimatePresence>
 
       {/* 模型详情卡片 */}
-      <AnimatePresence mode="wait">
-        <motion.div
-          key={displayModel}
-          initial={{ opacity: 0, y: 6 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 0.2 }}
-          className={`rounded-2xl p-4 border ${currentMeta.bg} border-zinc-100`}
-        >
+      <motion.div
+        key={displayModel}
+        initial={{ opacity: 0 }}
+        animate={{ opacity: 1 }}
+        transition={{ duration: 0.15 }}
+        className={`rounded-2xl p-4 border ${currentMeta.bg} border-zinc-100`}
+      >
           <div className="flex items-start gap-3 mb-3">
             <div className={`w-10 h-10 rounded-xl flex items-center justify-center bg-gradient-to-br ${currentMeta.gradient} shadow-md flex-shrink-0`}>
               <currentMeta.icon weight="fill" className="w-5 h-5 text-white" />
@@ -332,8 +331,7 @@ export default function ModelSelector({ mode, setMode, disabled }) {
               </AnimatePresence>
             </>
           )}
-        </motion.div>
-      </AnimatePresence>
+      </motion.div>
     </div>
   )
 }

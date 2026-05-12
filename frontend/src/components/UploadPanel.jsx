@@ -144,7 +144,7 @@ export default function UploadPanel({ mode, isLoading, setIsLoading, setError, o
       </AnimatePresence>
 
       {/* 模式说明 */}
-      <p className="mt-4 text-[11px] text-zinc-400 leading-relaxed px-1">
+      <p className="mt-4 text-xs text-zinc-400 leading-relaxed px-1">
         {mode === 'detect'
           ? 'YOLO 目标检测：在图像中定位物体并用边界框标出'
           : mode === 'clip'

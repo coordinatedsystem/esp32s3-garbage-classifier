@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Trash, Leaf, Recycle, Warning, Cpu, Brain, Upload, ChartBar } from '@phosphor-icons/react'
+import { Trash, Leaf, Recycle, Warning, Cpu, Brain, Upload } from '@phosphor-icons/react'
 import StatusBar from './components/StatusBar.jsx'
 import ModelSelector from './components/ModelSelector.jsx'
 import UploadPanel from './components/UploadPanel.jsx'
@@ -87,59 +87,34 @@ export default function App() {
           <div className="flex-1 overflow-y-auto p-6">
             <div className="max-w-[960px] mx-auto space-y-6">
               {/* 选项卡内容 */}
-              <AnimatePresence mode="wait">
-                {activeTab === 'hardware' && (
-                  <motion.div
-                    key="hardware"
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -8 }}
-                  >
-                    <HardwarePanel />
-                  </motion.div>
-                )}
+              {activeTab === 'hardware' && <HardwarePanel />}
 
-                {activeTab === 'model' && (
-                  <motion.div
-                    key="model"
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -8 }}
-                  >
-                    <ModelSelector mode={mode} setMode={setMode} disabled={isLoading} />
-                  </motion.div>
-                )}
+              {activeTab === 'model' && (
+                <ModelSelector mode={mode} setMode={setMode} disabled={isLoading} />
+              )}
 
-                {activeTab === 'upload' && (
-                  <motion.div
-                    key="upload"
-                    initial={{ opacity: 0, y: 8 }}
-                    animate={{ opacity: 1, y: 0 }}
-                    exit={{ opacity: 0, y: -8 }}
-                    className="space-y-6"
-                  >
-                    <UploadPanel
-                      mode={mode}
-                      setMode={setMode}
-                      isLoading={isLoading}
-                      setIsLoading={setIsLoading}
-                      setError={setError}
-                      onResult={handleResult}
-                      onClear={handleClear}
-                    />
+              {activeTab === 'upload' && (
+                <div className="space-y-6">
+                  <UploadPanel
+                    mode={mode}
+                    isLoading={isLoading}
+                    setIsLoading={setIsLoading}
+                    setError={setError}
+                    onResult={handleResult}
+                    onClear={handleClear}
+                  />
 
-                    <AnimatePresence mode="wait">
-                      {isLoading ? (
-                        <LoadingSkeleton key="loading" />
-                      ) : error ? (
-                        <ErrorState key="error" message={error} onDismiss={() => setError(null)} />
-                      ) : result ? (
-                        <ResultsDisplay key="result" result={result} categoryConfig={CATEGORY_CONFIG} />
-                      ) : null}
-                    </AnimatePresence>
-                  </motion.div>
-                )}
-              </AnimatePresence>
+                  <AnimatePresence mode="wait">
+                    {isLoading ? (
+                      <LoadingSkeleton key="loading" />
+                    ) : error ? (
+                      <ErrorState key="error" message={error} onDismiss={() => setError(null)} />
+                    ) : result ? (
+                      <ResultsDisplay key="result" result={result} categoryConfig={CATEGORY_CONFIG} />
+                    ) : null}
+                  </AnimatePresence>
+                </div>
+              )}
 
               {/* 历史记录 — 仅在硬件和上传标签时显示 */}
               {(activeTab === 'hardware' || activeTab === 'upload') && (

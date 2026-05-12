@@ -55,7 +55,7 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
           </div>
           <div>
             <h2 className="text-lg font-bold text-zinc-800 tracking-tight">历史记录</h2>
-            <p className="text-[11px] text-zinc-400">{total} 条记录</p>
+            <p className="text-xs text-zinc-400">{total} 条记录</p>
           </div>
         </div>
         <div className="flex items-center gap-2">
@@ -65,7 +65,7 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
               <button
                 key={opt.key}
                 onClick={() => setFilter(opt.key)}
-                className={`px-3 py-1.5 rounded-md text-[11px] font-semibold spring-transition ${
+                className={`px-3 py-1.5 rounded-md text-xs font-semibold spring-transition ${
                   filter === opt.key ? 'bg-white text-zinc-800 shadow-sm' : 'text-zinc-400 hover:text-zinc-600'
                 }`}
               >
@@ -76,7 +76,7 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
           {total > 0 && (
             <button
               onClick={handleClear}
-              className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-[11px] font-semibold text-zinc-400 hover:text-red-500 hover:bg-red-50 spring-transition"
+              className="flex items-center gap-1 px-3 py-1.5 rounded-lg text-xs font-semibold text-zinc-400 hover:text-red-500 hover:bg-red-50 spring-transition"
             >
               <Trash weight="bold" className="w-3 h-3" />
               清空
@@ -85,7 +85,7 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
           {filtered.length > 6 && (
             <button
               onClick={() => setExpanded(!expanded)}
-              className="flex items-center gap-1 text-[11px] font-semibold text-zinc-400 hover:text-zinc-600 spring-transition"
+              className="flex items-center gap-1 text-xs font-semibold text-zinc-400 hover:text-zinc-600 spring-transition"
             >
               {expanded ? '收起' : `全部 (${filtered.length})`}
               {expanded ? <CaretUp weight="bold" className="w-3 h-3" /> : <CaretDown weight="bold" className="w-3 h-3" />}
@@ -131,6 +131,8 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
               const time = new Date(entry.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
               const pct = entry.data?.confidence !== undefined ? Math.round(entry.data.confidence * 100) : null
               const respMs = entry.data?.response_time_ms
+              const trigMode = entry.trigger_mode
+              const trigLabel = trigMode === 'distance' ? '距离触发' : trigMode === 'button' ? '按键触发' : null
 
               return (
                 <motion.div
@@ -162,6 +164,9 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
                       </span>
                       {cat && (
                         <span className={`text-xs font-semibold ${cat.text}`}>{cat.labelZh}</span>
+                      )}
+                      {trigLabel && (
+                        <span className="text-xs font-medium text-amber-600">{trigLabel}</span>
                       )}
                       {pct !== null && (
                         <span className="text-xs text-zinc-400 ml-auto">{pct}%</span>

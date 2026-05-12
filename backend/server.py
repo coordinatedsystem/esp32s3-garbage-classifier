@@ -228,10 +228,11 @@ HISTORY_MAX = 50
 active_classify_model = "clip"  # 当前分类模型: clip / doubao / qwen / custom
 
 trigger_config = {
-    "mode": "button",       # "button" | "distance"
-    "distance_min": 30,     # mm, 最小触发距离
-    "distance_max": 300,    # mm, 最大触发距离
-    "cooldown_ms": 2000     # ms, 触发缓冲时间 (物体需稳定在范围内的时间)
+    "mode": "button",           # "button" | "distance"
+    "distance_min": 30,         # mm, 最小触发距离
+    "distance_max": 300,        # mm, 最大触发距离
+    "cooldown_ms": 2000,        # ms, 触发缓冲时间 (物体需稳定在范围内的时间)
+    "trigger_interval_ms": 10000  # ms, 两次触发最小间隔
 }
 
 
@@ -252,7 +253,7 @@ def _make_thumbnail(image_data: bytes, max_edge: int = 320) -> str:
         return None
 
 
-def _add_history(mode: str, data: dict, image_data: bytes):
+def _add_history(mode: str, data: dict, image_data: bytes, trigger_mode: str = ""):
     """线程安全地添加历史记录"""
     thumb = _make_thumbnail(image_data)
     entry = {
@@ -260,7 +261,8 @@ def _add_history(mode: str, data: dict, image_data: bytes):
         "mode": mode,
         "timestamp": datetime.now(timezone.utc).isoformat(),
         "data": data,
-        "imageUrl": thumb
+        "imageUrl": thumb,
+        "trigger_mode": trigger_mode
     }
     with state_lock:
         server_history.insert(0, entry)
@@ -362,6 +364,7 @@ async def classify_image(
     source: str = Query("web"),
     ip: str = Query(""),
     model: str = Query(""),   # 可选：覆盖当前激活的分类模型
+    trigger_mode: str = Query(""),
     background_tasks: BackgroundTasks = None
 ):
     t_start = time.time()
@@ -426,10 +429,11 @@ async def classify_image(
         response_time_ms = int((time.time() - t_start) * 1000)
         result_data["response_time_ms"] = response_time_ms
 
+        tm = trigger_mode or trigger_config["mode"]
         if background_tasks:
-            background_tasks.add_task(_add_history, "classify", result_data, image_data)
+            background_tasks.add_task(_add_history, "classify", result_data, image_data, tm)
         else:
-            _add_history("classify", result_data, image_data)
+            _add_history("classify", result_data, image_data, tm)
 
         return {
             "success": True,
@@ -525,10 +529,11 @@ async def set_active_model(model: str = Query(...)):
 # ===================== 触发配置接口 =====================
 
 class TriggerConfigBody(BaseModel):
-    mode: str = "button"       # "button" | "distance"
-    distance_min: int = 30     # mm
-    distance_max: int = 300    # mm
-    cooldown_ms: int = 2000    # ms
+    mode: str = "button"              # "button" | "distance"
+    distance_min: int = 30            # mm
+    distance_max: int = 300           # mm
+    cooldown_ms: int = 2000           # ms
+    trigger_interval_ms: int = 10000  # ms
 
 
 @app.get("/trigger/config")
@@ -547,12 +552,15 @@ async def set_trigger_config(body: TriggerConfigBody):
         raise HTTPException(status_code=400, detail="distance_min must be < distance_max")
     if body.cooldown_ms < 0 or body.cooldown_ms > 30000:
         raise HTTPException(status_code=400, detail="cooldown_ms must be 0-30000 ms")
+    if body.trigger_interval_ms < 1000 or body.trigger_interval_ms > 60000:
+        raise HTTPException(status_code=400, detail="trigger_interval_ms must be 1000-60000 ms")
     with state_lock:
         trigger_config["mode"] = body.mode
         trigger_config["distance_min"] = body.distance_min
         trigger_config["distance_max"] = body.distance_max
         trigger_config["cooldown_ms"] = body.cooldown_ms
-    print(f"[trigger] config updated: mode={body.mode} range={body.distance_min}-{body.distance_max}mm cooldown={body.cooldown_ms}ms")
+        trigger_config["trigger_interval_ms"] = body.trigger_interval_ms
+    print(f"[trigger] config updated: mode={body.mode} range={body.distance_min}-{body.distance_max}mm cooldown={body.cooldown_ms}ms interval={body.trigger_interval_ms}ms")
     return {"message": "Trigger config updated", "config": dict(trigger_config)}
 
 
@@ -634,7 +642,7 @@ async def detect_image(file: UploadFile = File(...)):
         }
 
         # 写入历史
-        _add_history("detect", result_data, image_data)
+        _add_history("detect", result_data, image_data, "web")
 
         return {
             "success": True,
@@ -741,7 +749,8 @@ async def hardware_capture(
                 "device_id": device_id,
                 "ip_address": ip_address
             },
-            "imageUrl": thumb
+            "imageUrl": thumb,
+            "trigger_mode": trigger_config["mode"]
         }
         with state_lock:
             server_history.insert(0, entry)

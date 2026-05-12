@@ -16,6 +16,7 @@
 #include "esp_camera.h"
 #include "wifi_config.h"
 #include "img_converters.h"   // fmt2jpg
+#include "esp_heap_caps.h"    // heap_caps_malloc (PSRAM)
 
 // ==============================
 // 屏幕引脚 (软件SPI)
@@ -82,18 +83,18 @@ Adafruit_VL53L0X tof = Adafruit_VL53L0X();
 // ==============================
 // 全局
 // ==============================
-enum State { ST_WIFI, ST_READY, ST_CAPTURE, ST_UPLOAD, ST_RESULT, ST_ERROR };
-State state = ST_WIFI;
-unsigned long resultShownMs = 0;  // 进入 ST_RESULT 的时间，用于冷却控制
-
 // 触发配置 (从服务器拉取)
 String  triggerMode = "button";   // "button" | "distance"
 int     distanceMin = 30;         // mm
 int     distanceMax = 300;        // mm
 int     cooldownMs  = 2000;       // ms, 物体稳定时间
+int     triggerIntervalMs = 10000; // ms, 两次触发最小间隔
 unsigned long presenceStart = 0;  // TOF 物体出现计时
 unsigned long lastTrigger = 0;    // 上次触发 ms (防重复触发)
 unsigned long lastConfigFetch = 0;
+unsigned long lastTofRefresh = 0; // 屏幕 TOF 刷新计时
+bool    configChanged = false;    // 配置变更反馈标记
+unsigned long configMsgMs = 0;    // 配置消息显示计时
 
 // ==============================
 // 屏幕小工具
@@ -315,21 +316,30 @@ void fetchTriggerConfig() {
   int code = http.GET();
   if (code == 200) {
     String body = http.getString();
-    DynamicJsonDocument doc(512);
+    StaticJsonDocument<256> doc;
     if (!deserializeJson(doc, body)) {
       String m  = doc["mode"] | "button";
       int    d1 = doc["distance_min"] | 30;
       int    d2 = doc["distance_max"] | 300;
       int    cd = doc["cooldown_ms"] | 2000;
+      int    ti = doc["trigger_interval_ms"] | 10000;
 
-      if (m != triggerMode || d1 != distanceMin || d2 != distanceMax || cd != cooldownMs) {
+      if (m != triggerMode || d1 != distanceMin || d2 != distanceMax || cd != cooldownMs || ti != triggerIntervalMs) {
+        tft.fillRect(0, 140, 128, 20, C_BLACK);
+        txt(2, 144, 1, C_YELLOW, "Updating...");
         triggerMode  = m;
         distanceMin  = d1;
         distanceMax  = d2;
         cooldownMs   = cd;
-        Serial.printf("[CFG] trigger=%s range=%d-%dmm cooldown=%dms\n",
-                      triggerMode.c_str(), distanceMin, distanceMax, cooldownMs);
-        drawReady();  // 刷新屏幕显示
+        triggerIntervalMs = ti;
+        configChanged = true;
+        configMsgMs   = millis();
+        delay(400);
+        tft.fillRect(0, 140, 128, 20, C_BLACK);
+        txt(2, 144, 1, C_GREEN, "Config OK");
+        Serial.printf("[CFG] trigger=%s range=%d-%dmm cooldown=%dms interval=%dms\n",
+                      triggerMode.c_str(), distanceMin, distanceMax, cooldownMs, triggerIntervalMs);
+        drawReady();
       }
     }
   }
@@ -341,7 +351,7 @@ void fetchTriggerConfig() {
 // OV3660 YUV422 -> fmt2jpg 转 JPEG
 // ==============================
 bool captureAndClassify() {
-  unsigned long t0 = millis();  // 计时起点
+  unsigned long t0 = millis();
 
   cls();
   bar("Capturing...");
@@ -367,16 +377,16 @@ bool captureAndClassify() {
     return false;
   }
 
-  unsigned long t1 = millis();  // 转换完成
+  unsigned long t1 = millis();
 
   tft.fillRect(0, 48, 128, 20, C_BLACK);
   txt(0, 50, 1, C_GREEN, "Convert OK");
   num(0, 65, 1, C_DARKGREY, (int)jpgLen);
   txt(35, 65, 1, C_DARKGREY, "B");
 
-  // 上传 — HTTPClient 管理连接，end() 可靠释放 socket
   bar("Classifying...");
 
+  // 使用 PSRAM 分配上传缓冲区，避免内部 RAM 碎片化
   String boundary = "----ESP32Boundary";
   String head = "--" + boundary + "\r\n";
   head += "Content-Disposition: form-data; name=\"file\"; filename=\"cap.jpg\"\r\n";
@@ -384,23 +394,21 @@ bool captureAndClassify() {
   String foot = "\r\n--" + boundary + "--\r\n";
   size_t bodySize = head.length() + jpgLen + foot.length();
 
-  uint8_t *bodyBuf = (uint8_t *)malloc(bodySize);
+  uint8_t *bodyBuf = (uint8_t *)heap_caps_malloc(bodySize, MALLOC_CAP_SPIRAM);
+  if (!bodyBuf) {
+    // PSRAM 不可用，回退到内部 RAM
+    bodyBuf = (uint8_t *)malloc(bodySize);
+  }
   if (!bodyBuf) { free(jpgBuf); err("No memory"); return false; }
   memcpy(bodyBuf, head.c_str(), head.length());
   memcpy(bodyBuf + head.length(), jpgBuf, jpgLen);
   memcpy(bodyBuf + head.length() + jpgLen, foot.c_str(), foot.length());
 
-  // 检查 WiFi 是否还连着
-  if (WiFi.status() != WL_CONNECTED) {
-    free(bodyBuf); free(jpgBuf);
-    err("WiFi lost");
-    return false;
-  }
-
   HTTPClient http;
   String hostStr = String(SERVER_HOST) + ":" + String(SERVER_PORT);
   String url = "http://" + hostStr
-             + "/classify?source=esp32&ip=" + WiFi.localIP().toString();
+             + "/classify?source=esp32&ip=" + WiFi.localIP().toString()
+             + "&trigger_mode=" + triggerMode;
   http.begin(url);
   http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
   http.setTimeout(HTTP_TIMEOUT_MS);
@@ -411,7 +419,6 @@ bool captureAndClassify() {
   if (code != 200) {
     http.end();
     free(jpgBuf);
-    delay(500);  // 让 socket 完全关闭
 
     cls();
     txt(0, 5, 2, C_RED, "HTTP ERR");
@@ -430,9 +437,9 @@ bool captureAndClassify() {
   String body = http.getString();
   http.end();
 
-  unsigned long t2 = millis();  // 上传+服务器完成
+  unsigned long t2 = millis();
 
-  // 解析
+  // 解析 — 使用堆分配避免大对象占栈
   DynamicJsonDocument doc(4096);
   if (body.length() == 0 || deserializeJson(doc, body)) { free(jpgBuf); err("JSON error"); return false; }
 
@@ -440,7 +447,6 @@ bool captureAndClassify() {
   float  conf    = doc["result"]["confidence"] | 0.0f;
   String modelUs = doc["result"]["model_used"] | "?";
 
-  // 显示
   cls();
   int pct = (int)(conf * 100);
   uint16_t cc;
@@ -477,9 +483,9 @@ bool captureAndClassify() {
   else
     txt(0, 112, 1, C_RED, "LOW confidence");
 
-  int convMs  = (int)(t1 - t0);     // fmt2jpg 耗时
-  int uploadMs = (int)(t2 - t1);     // 上传+服务器耗时
-  int totalMs  = (int)(t2 - t0);     // 总耗时
+  int convMs  = (int)(t1 - t0);
+  int uploadMs = (int)(t2 - t1);
+  int totalMs  = (int)(t2 - t0);
 
   char buf[24];
   snprintf(buf, sizeof(buf), "Cv %d.%d U %d.%d",
@@ -487,13 +493,13 @@ bool captureAndClassify() {
            uploadMs / 1000, (uploadMs % 1000) / 100);
   txt(0, 122, 1, C_DARKGREY, buf);
 
-  snprintf(buf, sizeof(buf), "T %d.%ds BOOT",
-           totalMs / 1000, (totalMs % 1000) / 100);
+  snprintf(buf, sizeof(buf), "T %d.%ds %s",
+           totalMs / 1000, (totalMs % 1000) / 100,
+           triggerMode == "button" ? "BTN" : "TOF");
   txt(0, 134, 1, C_DARKGREY, buf);
 
   txt(0, 148, 1, C_DARKGREY, modelUs.c_str());
 
-  // 硬件采集已在 /classify?source=esp32 中自动处理，无需额外请求
   free(jpgBuf);
   return true;
 }
@@ -511,41 +517,46 @@ void drawBoot() {
 
 void drawReady() {
   cls();
-  txt(0, 0, 3, C_WHITE, "Ready.");
+  txt(0, 0, 2, C_WHITE, "Ready");
 
   if (triggerMode == "distance") {
-    txt(0, 28, 1, C_CYAN, "Auto trigger");
-    txt(0, 40, 1, C_DARKGREY, "Dist:");
-    num(32, 40, 1, C_WHITE, distanceMin);
-    txt(58, 40, 1, C_DARKGREY, "-");
-    num(66, 40, 1, C_WHITE, distanceMax);
-    txt(90, 40, 1, C_DARKGREY, "mm");
+    txt(0, 20, 1, C_CYAN, "Auto (TOF)");
+    txt(0, 34, 1, C_DARKGREY, "Range:");
+    num(42, 34, 1, C_WHITE, distanceMin);
+    txt(0, 46, 1, C_DARKGREY, "  -");
+    num(20, 46, 1, C_WHITE, distanceMax);
+    txt(46, 46, 1, C_DARKGREY, "mm");
+    txt(0, 58, 1, C_DARKGREY, "Buf:");
+    num(26, 58, 1, C_WHITE, cooldownMs);
+    txt(54, 58, 1, C_DARKGREY, "ms");
+    txt(0, 68, 1, C_DARKGREY, "Int:");
+    num(26, 68, 1, C_WHITE, triggerIntervalMs / 1000);
+    txt(38, 68, 1, C_DARKGREY, "s");
 
     int dist = readTOF();
-    txt(0, 55, 1, C_DARKGREY, "TOF:");
+    txt(0, 82, 1, C_DARKGREY, "TOF:");
     if (dist >= 0) {
-      num(28, 55, 1, C_GREEN, dist);
-      txt(52, 55, 1, C_DARKGREY, "mm");
-      // 在范围内高亮
+      num(28, 82, 1, C_GREEN, dist);
+      txt(52, 82, 1, C_DARKGREY, "mm");
       if (dist >= distanceMin && dist <= distanceMax) {
-        txt(0, 68, 1, C_GREEN, "IN RANGE");
+        txt(0, 96, 1, C_GREEN, "IN RANGE");
       } else {
-        txt(0, 68, 1, C_DARKGREY, "waiting...");
+        txt(0, 96, 1, C_DARKGREY, "waiting...");
       }
     } else {
-      txt(28, 55, 1, C_RED, "---");
-      txt(0, 68, 1, C_DARKGREY, "no target");
+      txt(28, 82, 1, C_RED, "---");
+      txt(0, 96, 1, C_DARKGREY, "no target");
     }
   } else {
-    txt(0, 35, 1, C_WHITE, "Place item in");
-    txt(0, 47, 1, C_WHITE, "front of camera");
-    txt(0, 70, 2, C_CYAN, "Press BOOT");
-    txt(0, 95, 1, C_YELLOW, "to classify");
+    txt(0, 28, 1, C_WHITE, "Place item in");
+    txt(0, 40, 1, C_WHITE, "front of camera");
+    txt(0, 62, 2, C_CYAN, "Press BOOT");
+    txt(0, 88, 1, C_YELLOW, "to classify");
   }
 
   // WiFi 状态
   int rssi = WiFi.RSSI();
-  tft.setCursor(0, 120);
+  tft.setCursor(0, 116);
   tft.setTextSize(1);
   tft.setTextColor(rssi > -60 ? C_GREEN : rssi > -75 ? C_YELLOW : C_RED);
   tft.print("WiFi ");
@@ -553,10 +564,10 @@ void drawReady() {
   tft.print("dBm");
 
   // 触发模式标签
-  tft.setCursor(0, 134);
+  tft.setCursor(0, 130);
   tft.setTextSize(1);
   tft.setTextColor(C_DARKGREY);
-  tft.print(triggerMode == "distance" ? "M:Auto" : "M:Btn");
+  tft.print(triggerMode == "distance" ? "Trig:Auto" : "Trig:Btn");
 }
 
 // ==============================
@@ -604,27 +615,36 @@ void setup() {
 
   delay(1500);
   drawReady();
-  state = ST_READY;
 }
 
 // ==============================
 // loop — 按钮触发 / TOF 距离触发
 // ==============================
 void loop() {
-  // 检查 WiFi，掉了就重连
+  unsigned long now = millis();
+
+  // WiFi 断线重连
   if (WiFi.status() != WL_CONNECTED) {
     drawBoot();
     txt(0, 83, 1, C_RED, "WiFi lost");
     txt(0, 95, 1, C_WHITE, "Reconnecting...");
     wifiConnect();
     fetchTriggerConfig();
+    lastConfigFetch = millis();
     drawReady();
+    return;
   }
 
-  // 每 30 秒同步一次触发配置
-  if (millis() - lastConfigFetch > 30000) {
+  // 每 30 秒同步触发配置
+  if (now - lastConfigFetch > 30000) {
     fetchTriggerConfig();
-    lastConfigFetch = millis();
+    lastConfigFetch = now;
+  }
+
+  // 清除配置变更消息
+  if (configChanged && now - configMsgMs > 2000) {
+    configChanged = false;
+    drawReady();
   }
 
   if (triggerMode == "button") {
@@ -635,7 +655,6 @@ void loop() {
         captureAndClassify();
         while (digitalRead(PIN_BOOT) == LOW) delay(10);
 
-        // 拉取最新配置（用户可能在前端改了）
         fetchTriggerConfig();
         lastConfigFetch = millis();
 
@@ -655,30 +674,44 @@ void loop() {
     // === 距离触发 ===
     int dist = readTOF();
 
-    // 刷新屏幕上的 TOF 读数
-    if (millis() % 500 < 10) {
-      tft.fillRect(28, 55, 50, 10, C_BLACK);
+    // 每 500ms 刷新屏幕 TOF 读数
+    if (now - lastTofRefresh >= 500) {
+      lastTofRefresh = now;
+      tft.fillRect(28, 82, 50, 10, C_BLACK);
       if (dist >= 0) {
-        num(28, 55, 1, C_GREEN, dist);
+        num(28, 82, 1, C_GREEN, dist);
         if (dist >= distanceMin && dist <= distanceMax) {
-          txt(0, 68, 1, C_GREEN, "IN RANGE ");
+          tft.fillRect(0, 96, 128, 10, C_BLACK);
+          txt(0, 96, 1, C_GREEN, "IN RANGE");
         } else {
-          txt(0, 68, 1, C_DARKGREY, "waiting...");
+          tft.fillRect(0, 96, 128, 10, C_BLACK);
+          txt(0, 96, 1, C_DARKGREY, "waiting...");
         }
       } else {
-        txt(28, 55, 1, C_RED, "---");
-        txt(0, 68, 1, C_DARKGREY, "no target");
+        txt(28, 82, 1, C_RED, "---");
+        tft.fillRect(0, 96, 128, 10, C_BLACK);
+        txt(0, 96, 1, C_DARKGREY, "no target");
       }
     }
 
     if (dist >= distanceMin && dist <= distanceMax) {
-      // 物体在范围内
-      unsigned long now = millis();
       if (presenceStart == 0) {
         presenceStart = now;
-      } else if (now - presenceStart >= (unsigned long)cooldownMs
-                 && now - lastTrigger > 3000) {
-        // 物体稳定在范围内超过 cooldown，且距上次触发 > 3s → 触发
+        tft.fillRect(0, 112, 128, 10, C_BLACK);
+        txt(0, 112, 1, C_GREEN, "Item detected");
+      }
+
+      // 显示倒计时
+      unsigned long elapsed = now - presenceStart;
+      if (elapsed < (unsigned long)cooldownMs && now - lastTrigger > (unsigned long)triggerIntervalMs) {
+        int secLeft = ((unsigned long)cooldownMs - elapsed) / 1000 + 1;
+        tft.fillRect(60, 112, 68, 20, C_BLACK);
+        num(80, 112, 1, C_YELLOW, secLeft);
+        txt(92, 112, 1, C_YELLOW, "s");
+      }
+
+      // 稳定超过缓冲时间 → 触发拍照
+      if (elapsed >= (unsigned long)cooldownMs && now - lastTrigger > (unsigned long)triggerIntervalMs) {
         lastTrigger = now;
         presenceStart = 0;
 
@@ -686,23 +719,22 @@ void loop() {
         delay(300);
         captureAndClassify();
 
-        // 拉取最新配置
         fetchTriggerConfig();
         lastConfigFetch = millis();
 
-        // 等待物体移开
-        int waitLoops = 0;
-        while (waitLoops < 200) {  // 最多等 10 秒
+        // 等待物体移开（最多 10 秒）
+        for (int w = 0; w < 200; w++) {
           int d2 = readTOF();
           if (d2 < distanceMin || d2 > distanceMax) break;
           delay(50);
-          waitLoops++;
         }
         delay(500);
         drawReady();
       }
     } else {
-      // 物体不在范围内，重置计时
+      if (presenceStart != 0) {
+        tft.fillRect(0, 112, 128, 20, C_BLACK);
+      }
       presenceStart = 0;
     }
   }

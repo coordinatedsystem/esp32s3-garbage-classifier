@@ -17,6 +17,7 @@ export default function HardwarePanel() {
   const [trigMin, setTrigMin] = useState(30)
   const [trigMax, setTrigMax] = useState(300)
   const [trigCooldown, setTrigCooldown] = useState(2000)
+  const [trigInterval, setTrigInterval] = useState(10000)
   const [trigSaving, setTrigSaving] = useState(false)
   const [trigMsg, setTrigMsg] = useState('')
 
@@ -26,6 +27,7 @@ export default function HardwarePanel() {
       setTrigMin(cfg.distance_min ?? 30)
       setTrigMax(cfg.distance_max ?? 300)
       setTrigCooldown(cfg.cooldown_ms ?? 2000)
+      setTrigInterval(cfg.trigger_interval_ms ?? 10000)
     }).catch(() => {})
   }, [])
 
@@ -37,12 +39,15 @@ export default function HardwarePanel() {
         mode: trigMode,
         distance_min: Number(trigMin),
         distance_max: Number(trigMax),
-        cooldown_ms: Number(trigCooldown)
+        cooldown_ms: Number(trigCooldown),
+        trigger_interval_ms: Number(trigInterval)
       })
-      setTrigMsg(res.message || '已保存')
-      setTimeout(() => setTrigMsg(''), 2000)
+      setTrigMsg('配置已保存 · 设备同步中...')
+      setTimeout(() => setTrigMsg('配置已同步 · 调整成功'), 1200)
+      setTimeout(() => setTrigMsg(''), 4000)
     } catch (e) {
       setTrigMsg('错误: ' + e.message)
+      setTimeout(() => setTrigMsg(''), 3000)
     } finally {
       setTrigSaving(false)
     }
@@ -237,26 +242,55 @@ export default function HardwarePanel() {
               </div>
             </div>
 
+            {/* 触发间隔 */}
+            <div>
+              <label className="text-sm font-semibold text-zinc-600 mb-1.5 block">
+                <Timer weight="bold" className="w-4 h-4 inline mr-1" />
+                最小触发间隔 (秒)
+              </label>
+              <div className="flex items-center gap-3">
+                <input
+                  type="range" min="1" max="60" value={Math.round(trigInterval / 1000)}
+                  onChange={e => setTrigInterval(Number(e.target.value) * 1000)}
+                  className="flex-1 h-2 rounded-full appearance-none bg-zinc-200 accent-indigo-500 cursor-pointer"
+                />
+                <input
+                  type="number" min="1" max="60" value={Math.round(trigInterval / 1000)}
+                  onChange={e => { const v = Number(e.target.value); if (v >= 1 && v <= 60) setTrigInterval(v * 1000) }}
+                  className="w-20 px-3 py-1.5 rounded-lg border border-zinc-300 text-sm font-mono text-center focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-400"
+                />
+              </div>
+            </div>
+
             <p className="text-sm text-zinc-500">
               物体在范围内稳定超过缓冲时间后自动触发拍照
             </p>
           </motion.div>
         )}
 
-        {/* 保存按钮 */}
-        <div className="flex items-center gap-3 mt-4 pt-3 border-t border-zinc-200">
-          <button
-            onClick={handleTrigSave}
-            disabled={trigSaving}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-semibold transition-all hover:bg-indigo-700 active:scale-[0.98] disabled:opacity-50"
-          >
-            <Check weight="bold" className="w-4 h-4" />
-            {trigSaving ? '保存中...' : '保存到设备'}
-          </button>
+        {/* 保存按钮 + 反馈 */}
+        <div className="mt-4 pt-3 border-t border-zinc-200 space-y-2">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={handleTrigSave}
+              disabled={trigSaving}
+              className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-semibold transition-all hover:bg-indigo-700 active:scale-[0.98] disabled:opacity-50"
+            >
+              <Check weight="bold" className="w-4 h-4" />
+              {trigSaving ? '保存中...' : '保存到设备'}
+            </button>
+          </div>
           {trigMsg && (
-            <span className={`text-sm ${trigMsg.startsWith('错误') ? 'text-red-500' : 'text-emerald-600'}`}>
+            <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium ${
+              trigMsg.startsWith('错误') ? 'bg-red-50 text-red-600' :
+              trigMsg.includes('同步中') ? 'bg-amber-50 text-amber-700' :
+              'bg-emerald-50 text-emerald-700'
+            }`}>
+              <span className={`w-2 h-2 rounded-full ${
+                trigMsg.includes('同步中') ? 'bg-amber-400 animate-pulse' : 'bg-emerald-500'
+              }`} />
               {trigMsg}
-            </span>
+            </div>
           )}
         </div>
       </div>

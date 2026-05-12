@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { CaretUp, CaretDown, CheckCircle, Info, Target, ChartBar, BookOpen, Timer } from '@phosphor-icons/react'
+import { CaretUp, CaretDown, CheckCircle, Target, ChartBar, BookOpen, Timer } from '@phosphor-icons/react'
 import ConfidenceGauge from './ConfidenceGauge'
 
 const barColors = ['bg-indigo-500', 'bg-indigo-300', 'bg-zinc-300']
@@ -54,7 +54,7 @@ function ClassifyResult({ result, categoryConfig }) {
           </motion.span>
         </div>
         {(response_time_ms !== undefined || model_used) && (
-          <div className="flex items-center gap-4 mt-3 text-[10px] text-zinc-400">
+          <div className="flex items-center gap-4 mt-3 text-xs text-zinc-400">
             {response_time_ms !== undefined && (
               <span className="flex items-center gap-1">
                 <Timer weight="bold" className="w-3 h-3" />
@@ -78,7 +78,7 @@ function ClassifyResult({ result, categoryConfig }) {
         <div className="flex items-start gap-6">
           <ConfidenceGauge confidence={confidence} size="lg" />
           <div className="flex-1 min-w-0">
-            <p className="text-[11px] text-zinc-400 mb-1">识别结果</p>
+            <p className="text-xs text-zinc-400 mb-1">识别结果</p>
             <h2 className="text-2xl lg:text-3xl font-bold tracking-tight text-zinc-900">
               {item_label_zh}
             </h2>
@@ -94,8 +94,8 @@ function ClassifyResult({ result, categoryConfig }) {
                 />
               </div>
               <div className="flex justify-between mt-1">
-                <span className="text-[10px] text-zinc-400">0%</span>
-                <span className="text-[10px] text-zinc-400">100%</span>
+                <span className="text-xs text-zinc-400">0%</span>
+                <span className="text-xs text-zinc-400">100%</span>
               </div>
             </div>
           </div>
