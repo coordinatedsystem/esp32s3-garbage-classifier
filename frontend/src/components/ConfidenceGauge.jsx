@@ -53,7 +53,7 @@ export default function ConfidenceGauge({ confidence, size = 'md' }) {
           </motion.span>
         </div>
       </div>
-      <span className="text-[10px] font-medium uppercase tracking-wider text-zinc-400">Confidence</span>
+      <span className="text-xs font-medium uppercase tracking-wider text-zinc-400">Confidence</span>
     </div>
   )
 }

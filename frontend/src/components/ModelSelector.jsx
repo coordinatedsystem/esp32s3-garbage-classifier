@@ -36,7 +36,7 @@ const allModes = ['clip', 'doubao', 'qwen', 'custom', 'detect']
 export default function ModelSelector({ mode, setMode, disabled }) {
   const [models, setModels] = useState(null)
   const [pendingModel, setPendingModel] = useState(null)  // 选中但未确认的模型
-  const [showConfig, setShowConfig] = useState(false)
+  const [showConfig, setShowConfig] = useState(null)
   const [configForm, setConfigForm] = useState({ api_key: '', api_base: '', model: '' })
   const [configMsg, setConfigMsg] = useState('')
   const [confirming, setConfirming] = useState(false)
@@ -76,29 +76,39 @@ export default function ModelSelector({ mode, setMode, disabled }) {
     setPendingModel(null)
   }
 
-  const openConfig = () => {
-    const currentModel = models?.find(m => m.id === mode)
+  const openConfig = (provider) => {
+    const providerModel = models?.find(m => m.id === provider)
+    const defaults = {
+      doubao: 'https://ark.cn-beijing.volces.com/api/v3',
+      qwen: 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+      custom: ''
+    }
     setConfigForm({
       api_key: '',
-      api_base: mode === 'doubao' ? 'https://ark.cn-beijing.volces.com/api/v3'
-              : mode === 'qwen' ? 'https://dashscope.aliyuncs.com/compatible-mode/v1'
-              : '',
-      model: currentModel?.model || ''
+      api_base: providerModel?.api_base || defaults[provider] || '',
+      model: providerModel?.model || ''
     })
-    setShowConfig(true)
+    setShowConfig(provider)
     setConfigMsg('')
   }
+
+  // 切换 provider 时重置表单
+  useEffect(() => {
+    if (!showConfig) {
+      setConfigForm({ api_key: '', api_base: '', model: '' })
+    }
+  }, [showConfig])
 
   const handleConfigSave = async () => {
     try {
       const res = await configureProvider(
-        mode, configForm.api_key, configForm.api_base, configForm.model
+        showConfig, configForm.api_key, configForm.api_base, configForm.model
       )
       setConfigMsg(res.message || 'Saved')
       // 刷新模型列表以更新 configured 状态
       const data = await getModels()
       setModels(data.models)
-      setTimeout(() => { setConfigMsg(''); setShowConfig(false) }, 1500)
+      setTimeout(() => { setConfigMsg(''); setShowConfig(null) }, 1500)
     } catch (e) {
       setConfigMsg('Error: ' + e.message)
     }
@@ -258,7 +268,7 @@ export default function ModelSelector({ mode, setMode, disabled }) {
           {isVisionModel && !pendingModel && (
             <>
               <button
-                onClick={openConfig}
+                onClick={() => openConfig(mode)}
                 className={`flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-sm font-medium spring-transition ${
                   currentModel?.configured
                     ? 'bg-emerald-100 text-emerald-600 hover:bg-emerald-200'
@@ -315,7 +325,7 @@ export default function ModelSelector({ mode, setMode, disabled }) {
                         保存
                       </button>
                       <button
-                        onClick={() => setShowConfig(false)}
+                        onClick={() => setShowConfig(null)}
                         className="text-xs text-zinc-400 hover:text-zinc-600"
                       >
                         取消

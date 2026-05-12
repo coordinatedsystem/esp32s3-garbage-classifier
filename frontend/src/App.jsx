@@ -1,7 +1,8 @@
 import { useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Trash, Leaf, Recycle, Warning, Cpu, Brain, Upload } from '@phosphor-icons/react'
-import StatusBar from './components/StatusBar.jsx'
+import { Trash, Leaf, Recycle, Warning, Cpu, Brain, Upload, HandPointing, Ruler } from '@phosphor-icons/react'
+import { checkHealth } from './api'
+import usePolling from './hooks/usePolling'
 import ModelSelector from './components/ModelSelector.jsx'
 import UploadPanel from './components/UploadPanel.jsx'
 import ResultsDisplay from './components/ResultsDisplay.jsx'
@@ -21,6 +22,9 @@ const NAV_ITEMS = [
   { key: 'upload',   label: '上传与结果', icon: Upload },
 ]
 
+const MODEL_LABELS = { clip: 'CLIP', doubao: '豆包', qwen: '千问', custom: '自定义', detect: 'YOLO' }
+const TRIGGER_LABELS = { button: '按键触发', distance: '距离触发' }
+
 export default function App() {
   const [mode, setMode] = useState('clip')
   const [result, setResult] = useState(null)
@@ -28,6 +32,16 @@ export default function App() {
   const [error, setError] = useState(null)
   const [historyKey, setHistoryKey] = useState(0)
   const [activeTab, setActiveTab] = useState('hardware')
+
+  const fetchHealth = useCallback(() => checkHealth(), [])
+  const { data: health, loading: healthLoading } = usePolling(fetchHealth, { interval: 10000 })
+
+  const serverOnline = health?.status === 'healthy'
+  const hardwareOnline = health?.hardware_online
+  const latency = health?.latency
+  const captures = health?.hardware_captures || 0
+  const activeModel = health?.active_model || 'clip'
+  const triggerMode = health?.trigger_config?.mode || 'button'
 
   const handleResult = useCallback((data, imageUrl) => {
     setResult(data)
@@ -44,13 +58,16 @@ export default function App() {
     <div className="min-h-[100dvh] bg-[#f8f8f8]">
       <div className="flex h-screen overflow-hidden">
 
-        {/* ====== 左侧导航栏 (窄) ====== */}
-        <nav className="w-[200px] flex-shrink-0 border-r border-zinc-200 bg-white flex flex-col">
-          <div className="px-5 py-5 border-b border-zinc-100">
+        {/* ====== 左侧导航栏 ====== */}
+        <nav className="w-[220px] flex-shrink-0 border-r border-zinc-200 bg-white flex flex-col">
+          {/* 标题 */}
+          <div className="px-5 py-4 border-b border-zinc-100">
             <h1 className="text-base font-bold text-zinc-900">垃圾分类系统</h1>
+            <p className="text-xs text-zinc-400 mt-0.5">ESP32-S3 智能识别</p>
           </div>
 
-          <div className="flex-1 py-4 space-y-1 px-3">
+          {/* 导航项 */}
+          <div className="py-3 space-y-1 px-3">
             {NAV_ITEMS.map((item) => {
               const Icon = item.icon
               const isActive = activeTab === item.key
@@ -58,9 +75,9 @@ export default function App() {
                 <button
                   key={item.key}
                   onClick={() => setActiveTab(item.key)}
-                  className={`w-full flex items-center gap-3 px-4 py-3 rounded-xl text-sm font-semibold transition-all ${
+                  className={`w-full flex items-center gap-3 px-4 py-2.5 rounded-xl text-sm font-semibold transition-all ${
                     isActive
-                      ? 'bg-indigo-50 text-indigo-700'
+                      ? 'bg-indigo-50 text-indigo-700 shadow-sm'
                       : 'text-zinc-500 hover:bg-zinc-50 hover:text-zinc-700'
                   }`}
                 >
@@ -71,29 +88,100 @@ export default function App() {
             })}
           </div>
 
-          <div className="px-4 py-4 border-t border-zinc-100">
-            <p className="text-xs text-zinc-400">ESP32-S3 v4.0.0</p>
+          {/* 分隔线 */}
+          <div className="mx-4 border-t border-zinc-100" />
+
+          {/* 系统信息 */}
+          <div className="flex-1 py-4 px-3 space-y-2.5 overflow-y-auto">
+            <p className="px-3 pb-1 text-xs font-bold text-zinc-400 uppercase tracking-wider">系统状态</p>
+
+            {/* 服务状态 */}
+            <div className={`px-3 py-2.5 rounded-xl transition-colors ${
+              healthLoading ? 'bg-zinc-50' : serverOnline ? 'bg-emerald-50/60' : 'bg-red-50/60'
+            }`}>
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full flex-shrink-0 ring-2 ${
+                  healthLoading ? 'bg-zinc-300 ring-zinc-100' :
+                  serverOnline ? 'bg-emerald-500 ring-emerald-100' : 'bg-red-500 ring-red-100'
+                }`} />
+                <span className="text-xs font-medium text-zinc-500">服务</span>
+              </div>
+              <p className={`text-[13px] font-semibold mt-0.5 pl-4 ${
+                healthLoading ? 'text-zinc-400' : serverOnline ? 'text-emerald-700' : 'text-red-600'
+              }`}>
+                {healthLoading ? '检测中...' : serverOnline ? `在线 · ${latency ?? '—'}ms` : '已离线'}
+              </p>
+            </div>
+
+            {/* 硬件状态 */}
+            <div className={`px-3 py-2.5 rounded-xl transition-colors ${
+              healthLoading ? 'bg-zinc-50' : hardwareOnline ? 'bg-indigo-50/60' : 'bg-zinc-50'
+            }`}>
+              <div className="flex items-center gap-2">
+                <span className={`w-2 h-2 rounded-full flex-shrink-0 ring-2 ${
+                  healthLoading ? 'bg-zinc-300 ring-zinc-100' :
+                  hardwareOnline ? 'bg-indigo-500 ring-indigo-100' : 'bg-zinc-300 ring-zinc-100'
+                }`} />
+                <span className="text-xs font-medium text-zinc-500">硬件</span>
+              </div>
+              <p className={`text-[13px] font-semibold mt-0.5 pl-4 ${
+                healthLoading ? 'text-zinc-400' : hardwareOnline ? 'text-indigo-700' : 'text-zinc-400'
+              }`}>
+                {healthLoading ? '检测中...' : hardwareOnline ? `在线 · ${captures} 次采集` : '离线'}
+              </p>
+            </div>
+
+            {/* 当前模型 */}
+            <div className="px-3 py-2.5 rounded-xl bg-violet-50/60 transition-colors">
+              <div className="flex items-center gap-2">
+                <Brain weight="bold" className="w-4 h-4 text-violet-500 flex-shrink-0" />
+                <span className="text-xs font-medium text-zinc-500">模型</span>
+              </div>
+              <p className="text-[13px] font-semibold text-violet-700 mt-0.5 pl-6">
+                {MODEL_LABELS[activeModel] || activeModel}
+              </p>
+            </div>
+
+            {/* 触发模式 */}
+            <div className={`px-3 py-2.5 rounded-xl transition-colors ${
+              triggerMode === 'distance' ? 'bg-amber-50/60' : 'bg-emerald-50/60'
+            }`}>
+              <div className="flex items-center gap-2">
+                {triggerMode === 'distance'
+                  ? <Ruler weight="bold" className="w-4 h-4 text-amber-500 flex-shrink-0" />
+                  : <HandPointing weight="bold" className="w-4 h-4 text-emerald-500 flex-shrink-0" />
+                }
+                <span className="text-xs font-medium text-zinc-500">触发</span>
+              </div>
+              <p className={`text-[13px] font-semibold mt-0.5 pl-6 ${
+                triggerMode === 'distance' ? 'text-amber-700' : 'text-emerald-700'
+              }`}>
+                {TRIGGER_LABELS[triggerMode] || triggerMode}
+              </p>
+            </div>
+          </div>
+
+          {/* 底部版本 */}
+          <div className="px-4 py-3 border-t border-zinc-100">
+            <p className="text-[10px] text-zinc-400">v4.0.1</p>
           </div>
         </nav>
 
         {/* ====== 右侧主区域 ====== */}
         <main className="flex-1 flex flex-col overflow-hidden min-w-0">
-          {/* 状态栏 */}
-          <div className="px-6 py-3 border-b border-zinc-200 bg-white">
-            <StatusBar />
-          </div>
-
           {/* 内容区 */}
           <div className="flex-1 overflow-y-auto p-6">
             <div className="max-w-[960px] mx-auto space-y-6">
-              {/* 选项卡内容 */}
-              {activeTab === 'hardware' && <HardwarePanel />}
+              {/* 选项卡内容 — 全部保持挂载，仅隐藏非活跃面板 */}
+              <div className={activeTab === 'hardware' ? '' : 'hidden'}>
+                <HardwarePanel />
+              </div>
 
-              {activeTab === 'model' && (
+              <div className={activeTab === 'model' ? '' : 'hidden'}>
                 <ModelSelector mode={mode} setMode={setMode} disabled={isLoading} />
-              )}
+              </div>
 
-              {activeTab === 'upload' && (
+              <div className={activeTab === 'upload' ? '' : 'hidden'}>
                 <div className="space-y-6">
                   <UploadPanel
                     mode={mode}
@@ -114,7 +202,7 @@ export default function App() {
                     ) : null}
                   </AnimatePresence>
                 </div>
-              )}
+              </div>
 
               {/* 历史记录 — 仅在硬件和上传标签时显示 */}
               {(activeTab === 'hardware' || activeTab === 'upload') && (

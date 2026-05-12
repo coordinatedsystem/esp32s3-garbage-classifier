@@ -216,6 +216,7 @@ server_start_time = time.time()
 
 hardware_state = {
     "online": False,
+    "last_seen": None,
     "last_capture": None,
     "ip_address": None,
     "capture_count": 0,
@@ -379,6 +380,7 @@ async def classify_image(
             last_capture_image = image_data
             with state_lock:
                 hardware_state["online"] = True
+                hardware_state["last_seen"] = time.time()
                 hardware_state["last_capture"] = datetime.now(timezone.utc).isoformat()
                 hardware_state["ip_address"] = ip or hardware_state.get("ip_address", "")
                 hardware_state["capture_count"] += 1
@@ -452,9 +454,16 @@ async def classify_image(
 @app.get("/health")
 async def health():
     uptime = time.time() - server_start_time
+    now = time.time()
     with state_lock:
         hw_online = hardware_state["online"]
+        last_seen = hardware_state["last_seen"]
         capture_count = hardware_state["capture_count"]
+    # 60 秒无心跳视为离线
+    if hw_online and last_seen and (now - last_seen > 60):
+        hw_online = False
+    elif not last_seen:
+        hw_online = False
     with state_lock:
         tc = dict(trigger_config)
     return {
@@ -537,7 +546,11 @@ class TriggerConfigBody(BaseModel):
 
 
 @app.get("/trigger/config")
-async def get_trigger_config():
+async def get_trigger_config(source: str = Query("")):
+    if source == "esp32":
+        with state_lock:
+            hardware_state["online"] = True
+            hardware_state["last_seen"] = time.time()
     with state_lock:
         return dict(trigger_config)
 
@@ -730,32 +743,22 @@ async def hardware_capture(
 
         with state_lock:
             hardware_state["online"] = True
+            hardware_state["last_seen"] = time.time()
             hardware_state["last_capture"] = datetime.now(timezone.utc).isoformat()
             hardware_state["ip_address"] = ip_address
             hardware_state["capture_count"] += 1
             hardware_state["device_id"] = device_id
             hardware_state["firmware_version"] = firmware_version
+            trig_mode = trigger_config["mode"]
 
         last_capture_image = image_data
 
-        # 写入历史（标记为硬件采集）
-        thumb = _make_thumbnail(image_data)
-        entry = {
-            "id": f"hw_{int(time.time() * 1000)}",
-            "mode": "hardware",
-            "timestamp": datetime.now(timezone.utc).isoformat(),
-            "data": {
-                "source": "hardware",
-                "device_id": device_id,
-                "ip_address": ip_address
-            },
-            "imageUrl": thumb,
-            "trigger_mode": trigger_config["mode"]
+        hw_data = {
+            "source": "hardware",
+            "device_id": device_id,
+            "ip_address": ip_address
         }
-        with state_lock:
-            server_history.insert(0, entry)
-            if len(server_history) > HISTORY_MAX:
-                server_history[:] = server_history[:HISTORY_MAX]
+        _add_history("hardware", hw_data, image_data, trig_mode)
 
         return {"success": True, "message": "Image received"}
     except Exception as e:

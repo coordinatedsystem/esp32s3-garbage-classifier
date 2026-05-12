@@ -131,8 +131,7 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
               const time = new Date(entry.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
               const pct = entry.data?.confidence !== undefined ? Math.round(entry.data.confidence * 100) : null
               const respMs = entry.data?.response_time_ms
-              const trigMode = entry.trigger_mode
-              const trigLabel = trigMode === 'distance' ? '距离触发' : trigMode === 'button' ? '按键触发' : null
+              const trigLabel = ({ distance: '距离触发', button: '按键触发' })[entry.trigger_mode] || null
 
               return (
                 <motion.div

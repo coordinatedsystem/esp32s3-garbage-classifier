@@ -31,8 +31,16 @@ export default function HardwarePanel() {
     }).catch(() => {})
   }, [])
 
+  const msgTimers = useRef([])
+
+  useEffect(() => {
+    return () => msgTimers.current.forEach(clearTimeout)
+  }, [])
+
   const handleTrigSave = async () => {
     setTrigSaving(true)
+    msgTimers.current.forEach(clearTimeout)
+    msgTimers.current = []
     setTrigMsg('')
     try {
       const res = await setTriggerConfig({
@@ -43,11 +51,11 @@ export default function HardwarePanel() {
         trigger_interval_ms: Number(trigInterval)
       })
       setTrigMsg('配置已保存 · 设备同步中...')
-      setTimeout(() => setTrigMsg('配置已同步 · 调整成功'), 1200)
-      setTimeout(() => setTrigMsg(''), 4000)
+      msgTimers.current.push(setTimeout(() => setTrigMsg('配置已同步 · 调整成功'), 1200))
+      msgTimers.current.push(setTimeout(() => setTrigMsg(''), 4000))
     } catch (e) {
       setTrigMsg('错误: ' + e.message)
-      setTimeout(() => setTrigMsg(''), 3000)
+      msgTimers.current.push(setTimeout(() => setTrigMsg(''), 3000))
     } finally {
       setTrigSaving(false)
     }
@@ -270,16 +278,14 @@ export default function HardwarePanel() {
 
         {/* 保存按钮 + 反馈 */}
         <div className="mt-4 pt-3 border-t border-zinc-200 space-y-2">
-          <div className="flex items-center gap-3">
-            <button
-              onClick={handleTrigSave}
-              disabled={trigSaving}
-              className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-semibold transition-all hover:bg-indigo-700 active:scale-[0.98] disabled:opacity-50"
-            >
-              <Check weight="bold" className="w-4 h-4" />
-              {trigSaving ? '保存中...' : '保存到设备'}
-            </button>
-          </div>
+          <button
+            onClick={handleTrigSave}
+            disabled={trigSaving}
+            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-semibold transition-all hover:bg-indigo-700 active:scale-[0.98] disabled:opacity-50"
+          >
+            <Check weight="bold" className="w-4 h-4" />
+            {trigSaving ? '保存中...' : '保存到设备'}
+          </button>
           {trigMsg && (
             <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium ${
               trigMsg.startsWith('错误') ? 'bg-red-50 text-red-600' :

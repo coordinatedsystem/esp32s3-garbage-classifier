@@ -310,7 +310,7 @@ void fetchTriggerConfig() {
   if (WiFi.status() != WL_CONNECTED) return;
   WiFiClient client;
   HTTPClient http;
-  String url = "http://" + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "/trigger/config";
+  String url = "http://" + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "/trigger/config?source=esp32";
   http.begin(client, url);
   http.setTimeout(3000);
   int code = http.GET();
