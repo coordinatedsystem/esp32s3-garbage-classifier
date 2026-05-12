@@ -13,7 +13,9 @@ export default defineConfig({
       '/history': 'http://localhost:8085',
       '/models': 'http://localhost:8085',
       '/model': 'http://localhost:8085',
-      '/trigger': 'http://localhost:8085'
+      '/trigger': 'http://localhost:8085',
+      '/metrics': 'http://localhost:8085',
+      '/events': 'http://localhost:8085'
     }
   }
 })

@@ -5,20 +5,38 @@ export default function usePolling(fetchFn, { interval = 15000, enabled = true }
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState(null)
   const fetchFnRef = useRef(fetchFn)
+  const inFlightRef = useRef(false)
+  const mountedRef = useRef(true)
+  const timerRef = useRef(null)
+  const lastOkRef = useRef(true)
 
   useEffect(() => {
     fetchFnRef.current = fetchFn
   }, [fetchFn])
 
+  useEffect(() => {
+    mountedRef.current = true
+    return () => { mountedRef.current = false }
+  }, [])
+
   const execute = useCallback(async () => {
+    if (inFlightRef.current) return
+    inFlightRef.current = true
     try {
       setError(null)
       const result = await fetchFnRef.current()
-      setData(result)
+      if (mountedRef.current) {
+        setData(result)
+        lastOkRef.current = true
+      }
     } catch (err) {
-      setError(err.message || 'Request failed')
+      if (mountedRef.current) {
+        setError(err.message || 'Request failed')
+        lastOkRef.current = false
+      }
     } finally {
-      setLoading(false)
+      if (mountedRef.current) setLoading(false)
+      inFlightRef.current = false
     }
   }, [])
 
@@ -28,25 +46,26 @@ export default function usePolling(fetchFn, { interval = 15000, enabled = true }
       return
     }
 
-    let cancelled = false
-    const run = async () => {
-      try {
-        const result = await fetchFnRef.current()
-        if (!cancelled) {
-          setData(result)
-          setError(null)
-        }
-      } catch (err) {
-        if (!cancelled) setError(err.message || 'Request failed')
-      } finally {
-        if (!cancelled) setLoading(false)
-      }
+    let stopped = false
+
+    const schedule = (delayMs) => {
+      if (stopped) return
+      timerRef.current = setTimeout(async () => {
+        if (stopped) return
+        await execute()
+        if (stopped) return
+        schedule(lastOkRef.current ? interval : 2000)
+      }, delayMs)
     }
 
-    run()
-    const id = setInterval(run, interval)
-    return () => { cancelled = true; clearInterval(id) }
-  }, [interval, enabled])
+    execute()
+    schedule(interval)
+
+    return () => {
+      stopped = true
+      clearTimeout(timerRef.current)
+    }
+  }, [interval, enabled, execute])
 
   return { data, loading, error, refetch: execute }
 }

@@ -1,4 +1,9 @@
 import os
+import asyncio
+import logging
+import uuid
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 
 # 本地加载（模型已下载到 backend/clip_model/）
 # 首次运行需注释下面两行以下载模型
@@ -21,13 +26,19 @@ import json
 import urllib.request
 import urllib.error
 from datetime import datetime, timezone
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, BackgroundTasks
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, BackgroundTasks, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
 from transformers import CLIPProcessor, CLIPModel
 from ultralytics import YOLO
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s %(levelname)s %(message)s"
+)
+logger = logging.getLogger("garbage-classifier")
 
 # ===================== 标签映射（完全保留） =====================
 LABEL_MAP = {
@@ -227,6 +238,15 @@ last_capture_image = None  # raw JPEG bytes
 server_history = []
 HISTORY_MAX = 50
 active_classify_model = "clip"  # 当前分类模型: clip / doubao / qwen / custom
+INFERENCE_WORKERS = max(2, min(4, (os.cpu_count() or 4)))
+inference_executor = ThreadPoolExecutor(max_workers=INFERENCE_WORKERS, thread_name_prefix="inference")
+runtime_metrics = {
+    "requests_total": 0,
+    "requests_failed": 0,
+    "inflight": 0,
+    "paths": defaultdict(lambda: {"count": 0, "errors": 0, "latency_ms_total": 0.0}),
+    "inference": {"classify_count": 0, "detect_count": 0, "fallback_count": 0, "vision_count": 0}
+}
 
 trigger_config = {
     "mode": "button",           # "button" | "distance"
@@ -236,16 +256,23 @@ trigger_config = {
     "trigger_interval_ms": 10000  # ms, 两次触发最小间隔
 }
 
+# SSE fan-out — all operations happen within the async event loop (single-threaded cooperative),
+# so no additional locking is needed for _sse_queues.
+_sse_queues = []
+
+async def _sse_notify(event_type, data):
+    for q in _sse_queues:
+        try:
+            q.put_nowait({"event": event_type, "data": data})
+        except asyncio.QueueFull:
+            pass
+
 
 def _make_thumbnail(image_data: bytes, max_edge: int = 320) -> str:
     """将图片转为缩略图 base64 data URL"""
     try:
         img = Image.open(io.BytesIO(image_data)).convert("RGB")
-        w, h = img.size
-        longest = max(w, h)
-        if longest > max_edge:
-            scale = max_edge / float(longest)
-            img = img.resize((max(1, int(w * scale)), max(1, int(h * scale))), Image.Resampling.BILINEAR)
+        img = 缩放到最大边(img, max_edge)
         buf = io.BytesIO()
         img.save(buf, format="JPEG", quality=60)
         b64 = base64.b64encode(buf.getvalue()).decode()
@@ -271,9 +298,68 @@ def _add_history(mode: str, data: dict, image_data: bytes, trigger_mode: str = "
             server_history[:] = server_history[:HISTORY_MAX]
 
 
+def _mark_hardware_online(ip_address: str = "", device_id: str = "ESP32-S3", firmware_version: str = "", capture_event: bool = False):
+    with state_lock:
+        hardware_state["online"] = True
+        hardware_state["last_seen"] = time.time()
+        if ip_address:
+            hardware_state["ip_address"] = ip_address
+        if device_id:
+            hardware_state["device_id"] = device_id
+        if firmware_version:
+            hardware_state["firmware_version"] = firmware_version
+        if capture_event:
+            hardware_state["capture_count"] += 1
+            hardware_state["last_capture"] = datetime.now(timezone.utc).isoformat()
+
+
+async def _run_blocking(fn, *args):
+    loop = asyncio.get_running_loop()
+    return await loop.run_in_executor(inference_executor, lambda: fn(*args))
+
+
 # ===================== FastAPI 初始化 =====================
-app = FastAPI(title="物品识别API", version="4.0.0")
+app = FastAPI(title="物品识别API", version="5.0.0")
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+
+
+@app.middleware("http")
+async def request_observability(request: Request, call_next):
+    request_id = request.headers.get("X-Request-Id") or str(uuid.uuid4())
+    path = request.url.path
+    method = request.method
+    start = time.perf_counter()
+    response = None
+    status_code = 500
+
+    with state_lock:
+        runtime_metrics["requests_total"] += 1
+        runtime_metrics["inflight"] += 1
+        paths_dict = runtime_metrics["paths"]
+        is_new = path not in paths_dict
+        paths_dict[path]["count"] += 1
+        if is_new and len(paths_dict) > 100:
+            # evict the least-requested path to prevent unbounded growth
+            worst = min((p for p in paths_dict if p != path), key=lambda p: paths_dict[p]["count"], default=None)
+            if worst:
+                del paths_dict[worst]
+
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        with state_lock:
+            p = runtime_metrics["paths"][path]
+            p["latency_ms_total"] += elapsed_ms
+            if status_code >= 400:
+                runtime_metrics["requests_failed"] += 1
+                p["errors"] += 1
+            runtime_metrics["inflight"] = max(0, runtime_metrics["inflight"] - 1)
+        if response is not None:
+            response.headers["X-Request-Id"] = request_id
+        logger.info(f"[req] id={request_id} {method} {path} status={status_code} latency_ms={elapsed_ms:.1f}")
 
 # ===================== 核心加速（无编译，100%兼容Windows） =====================
 device = "cpu"
@@ -319,10 +405,14 @@ def 缩放到最大边(image: Image.Image, max_edge: int = 1280) -> Image.Image:
     return image.resize(new_size, Image.Resampling.BILINEAR)
 
 
+def _prep_image(image_data: bytes) -> Image.Image:
+    image = Image.open(io.BytesIO(image_data)).convert("RGB")
+    return 缩放到最大边(image, 1280)
+
+
 # ===================== CLIP 分类逻辑（提取为独立函数） =====================
 def _classify_clip(image_data: bytes):
-    image = Image.open(io.BytesIO(image_data)).convert("RGB")
-    image = 缩放到最大边(image, 1280)
+    image = _prep_image(image_data)
 
     pixel_values = processor(images=image, return_tensors="pt").pixel_values.to(device)
 
@@ -358,6 +448,19 @@ def _classify_clip(image_data: bytes):
     }
 
 
+def _detect_yolo(image_data: bytes):
+    image = _prep_image(image_data)
+    image_np = np.array(image)
+    return yolo_model.predict(
+        source=image_np,
+        verbose=False,
+        device="cpu",
+        imgsz=512,
+        conf=0.25,
+        iou=0.45
+    )
+
+
 # ===================== 识别接口 =====================
 @app.post("/classify")
 async def classify_image(
@@ -372,39 +475,47 @@ async def classify_image(
     try:
         image_data = await file.read()
         classify_model = model if model else active_classify_model
-        print(f"[classify] source={source}, ip={ip}, model={classify_model}, image_size={len(image_data)}")
+        logger.info(f"[classify] source={source}, ip={ip}, model={classify_model}, image_size={len(image_data)}")
 
         # ESP32 硬件上线标记
         if source == "esp32":
             global last_capture_image
-            last_capture_image = image_data
             with state_lock:
-                hardware_state["online"] = True
-                hardware_state["last_seen"] = time.time()
-                hardware_state["last_capture"] = datetime.now(timezone.utc).isoformat()
-                hardware_state["ip_address"] = ip or hardware_state.get("ip_address", "")
-                hardware_state["capture_count"] += 1
-                hardware_state["device_id"] = "ESP32-S3"
-                hardware_state["firmware_version"] = hardware_state.get("firmware_version") or "4.0.0"
-            print(f"[硬件] ESP32 已上线 ip={ip} captures={hardware_state['capture_count']}")
+                last_capture_image = image_data
+            _mark_hardware_online(
+                ip_address=ip or hardware_state.get("ip_address", ""),
+                device_id="ESP32-S3",
+                firmware_version=hardware_state.get("firmware_version") or "5.0.0",
+                capture_event=True
+            )
+            await _sse_notify("new_capture", {"source": "esp32"})
 
         # 按模型路由
+        t_infer_start = time.time()
         if classify_model == "clip":
-            result_data = _classify_clip(image_data)
+            result_data = await _run_blocking(_classify_clip, image_data)
+            with state_lock:
+                runtime_metrics["inference"]["classify_count"] += 1
         elif classify_model in VISION_PROVIDERS:
             if not VISION_PROVIDERS[classify_model]["api_key"]:
-                print(f"[classify] {classify_model} 未配置 API Key，回退到 CLIP")
-                result_data = _classify_clip(image_data)
+                logger.warning(f"[classify] {classify_model} 未配置 API Key，回退到 CLIP")
+                result_data = await _run_blocking(_classify_clip, image_data)
                 result_data["model_used"] = "clip (fallback)"
+                with state_lock:
+                    runtime_metrics["inference"]["classify_count"] += 1
+                    runtime_metrics["inference"]["fallback_count"] += 1
             else:
                 try:
-                    item_en, conf = _call_vision_llm(image_data, classify_model)
+                    item_en, conf = await _run_blocking(_call_vision_llm, image_data, classify_model)
                 except Exception as e:
-                    print(f"[classify] Vision API 调用失败: {e}, 回退到 CLIP")
+                    logger.warning(f"[classify] Vision API 调用失败: {e}, 回退到 CLIP")
                     if source != "esp32":
                         raise  # web 用户看到错误
-                    result_data = _classify_clip(image_data)
+                    result_data = await _run_blocking(_classify_clip, image_data)
                     result_data["model_used"] = "clip (fallback)"
+                    with state_lock:
+                        runtime_metrics["inference"]["classify_count"] += 1
+                        runtime_metrics["inference"]["fallback_count"] += 1
                 else:
                     en_key, item_zh = _match_vision_label(item_en)
                     waste_category, waste_category_zh = 获取垃圾分类(item_zh)
@@ -425,13 +536,18 @@ async def classify_image(
                         "top3": [top3_entry],
                         "model_used": classify_model
                     }
+                    with state_lock:
+                        runtime_metrics["inference"]["vision_count"] += 1
         else:
             raise HTTPException(status_code=400, detail=f"Unknown model: {classify_model}")
 
+        inference_time_ms = int((time.time() - t_infer_start) * 1000)
         response_time_ms = int((time.time() - t_start) * 1000)
+        result_data["inference_time_ms"] = inference_time_ms
         result_data["response_time_ms"] = response_time_ms
 
-        tm = trigger_mode or trigger_config["mode"]
+        with state_lock:
+            tm = trigger_mode or trigger_config["mode"]
         if background_tasks:
             background_tasks.add_task(_add_history, "classify", result_data, image_data, tm)
         else:
@@ -440,6 +556,7 @@ async def classify_image(
         return {
             "success": True,
             "result": result_data,
+            "inference_time_ms": inference_time_ms,
             "response_time_ms": response_time_ms,
             "message": f"识别结果：{result_data['item_label_zh']} 置信度：{result_data['confidence'] * 100:.1f}%"
         }
@@ -546,11 +663,7 @@ class TriggerConfigBody(BaseModel):
 
 
 @app.get("/trigger/config")
-async def get_trigger_config(source: str = Query("")):
-    if source == "esp32":
-        with state_lock:
-            hardware_state["online"] = True
-            hardware_state["last_seen"] = time.time()
+async def get_trigger_config():
     with state_lock:
         return dict(trigger_config)
 
@@ -584,18 +697,9 @@ async def set_trigger_config(body: TriggerConfigBody):
 async def detect_image(file: UploadFile = File(...)):
     try:
         image_data = await file.read()
-        image = Image.open(io.BytesIO(image_data)).convert("RGB")
-        image = 缩放到最大边(image, 1280)
-        image_np = np.array(image)
-
-        results = yolo_model.predict(
-            source=image_np,
-            verbose=False,
-            device="cpu",
-            imgsz=512,
-            conf=0.25,
-            iou=0.45
-        )
+        results = await _run_blocking(_detect_yolo, image_data)
+        with state_lock:
+            runtime_metrics["inference"]["detect_count"] += 1
         if not results:
             return {
                 "success": True,
@@ -728,12 +832,22 @@ async def clear_history():
     return {"success": True, "message": "History cleared"}
 
 
+@app.delete("/history/item")
+async def delete_history_item(id: str = Query(...)):
+    with state_lock:
+        for i, entry in enumerate(server_history):
+            if entry.get("id") == id:
+                server_history.pop(i)
+                return {"success": True, "message": f"Deleted {id}"}
+    raise HTTPException(status_code=404, detail="Entry not found")
+
+
 # ===================== 硬件接口 =====================
 @app.post("/hardware/capture")
 async def hardware_capture(
     file: UploadFile = File(...),
     device_id: str = Query("ESP32-S3"),
-    firmware_version: str = Query("4.0.0"),
+    firmware_version: str = Query("5.0.0"),
     ip_address: str = Query("unknown")
 ):
     """ESP32-S3 上传采集图片"""
@@ -741,17 +855,15 @@ async def hardware_capture(
     try:
         image_data = await file.read()
 
+        _mark_hardware_online(
+            ip_address=ip_address,
+            device_id=device_id,
+            firmware_version=firmware_version,
+            capture_event=True
+        )
         with state_lock:
-            hardware_state["online"] = True
-            hardware_state["last_seen"] = time.time()
-            hardware_state["last_capture"] = datetime.now(timezone.utc).isoformat()
-            hardware_state["ip_address"] = ip_address
-            hardware_state["capture_count"] += 1
-            hardware_state["device_id"] = device_id
-            hardware_state["firmware_version"] = firmware_version
             trig_mode = trigger_config["mode"]
-
-        last_capture_image = image_data
+            last_capture_image = image_data
 
         hw_data = {
             "source": "hardware",
@@ -760,18 +872,37 @@ async def hardware_capture(
         }
         _add_history("hardware", hw_data, image_data, trig_mode)
 
+        await _sse_notify("new_capture", {"source": "hardware"})
+
         return {"success": True, "message": "Image received"}
     except Exception as e:
         print(f"[硬件错误] {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"硬件上传失败：{str(e)}")
 
 
+@app.get("/hardware/heartbeat")
+async def hardware_heartbeat(
+    device_id: str = Query("ESP32-S3"),
+    firmware_version: str = Query(""),
+    ip_address: str = Query("")
+):
+    _mark_hardware_online(
+        ip_address=ip_address,
+        device_id=device_id,
+        firmware_version=firmware_version,
+        capture_event=False
+    )
+    return {"success": True, "message": "heartbeat received"}
+
+
 @app.get("/hardware/image")
 async def hardware_image():
     """获取最后一次硬件采集的图片"""
-    if last_capture_image is None:
+    with state_lock:
+        img = last_capture_image
+    if img is None:
         raise HTTPException(status_code=404, detail="No hardware image available")
-    return Response(content=last_capture_image, media_type="image/jpeg")
+    return Response(content=img, media_type="image/jpeg")
 
 
 @app.get("/hardware/status")
@@ -780,6 +911,69 @@ async def hardware_status():
     with state_lock:
         status = dict(hardware_state)
     return status
+
+
+@app.get("/events")
+async def sse_endpoint(request: Request):
+    """Server-Sent Events — real-time push when ESP32 captures a photo"""
+    queue = asyncio.Queue()
+    _sse_queues.append(queue)
+
+    async def event_generator():
+        try:
+            yield f"event: connected\ndata: {json.dumps({'status': 'connected'})}\n\n"
+            while True:
+                if await request.is_disconnected():
+                    break
+                try:
+                    msg = await asyncio.wait_for(queue.get(), timeout=15.0)
+                    yield f"event: {msg['event']}\ndata: {json.dumps(msg['data'])}\n\n"
+                except asyncio.TimeoutError:
+                    yield "event: ping\ndata: {}\n\n"
+        finally:
+            _sse_queues.remove(queue)
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+
+@app.get("/metrics/runtime")
+async def runtime_metrics_view():
+    now = time.time()
+    with state_lock:
+        paths = {}
+        for path, stat in runtime_metrics["paths"].items():
+            avg_latency = (stat["latency_ms_total"] / stat["count"]) if stat["count"] else 0.0
+            paths[path] = {
+                "count": stat["count"],
+                "errors": stat["errors"],
+                "avg_latency_ms": round(avg_latency, 2)
+            }
+        requests_total = runtime_metrics["requests_total"]
+        requests_failed = runtime_metrics["requests_failed"]
+        inflight = runtime_metrics["inflight"]
+        inference = dict(runtime_metrics["inference"])
+        hw_last_seen = hardware_state.get("last_seen")
+    error_rate = (requests_failed / requests_total) if requests_total else 0.0
+    queue_depth = max(0, inflight - INFERENCE_WORKERS)
+    return {
+        "requests_total": requests_total,
+        "requests_failed": requests_failed,
+        "error_rate": round(error_rate, 4),
+        "inflight": inflight,
+        "queue_depth": queue_depth,
+        "inference_workers": INFERENCE_WORKERS,
+        "inference": inference,
+        "paths": paths,
+        "hardware_last_seen_seconds": (round(now - hw_last_seen, 1) if hw_last_seen else None)
+    }
 
 
 # ===================== 前端静态文件 =====================

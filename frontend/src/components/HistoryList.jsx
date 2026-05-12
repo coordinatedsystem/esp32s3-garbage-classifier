@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ClockCounterClockwise, CaretDown, CaretUp, ImageSquare, Trash } from '@phosphor-icons/react'
-import { getHistory, clearHistory } from '../api'
+import { getHistory, clearHistory, deleteHistoryItem } from '../api'
 
 const FILTER_OPTIONS = [
   { key: 'all', label: '全部' },
@@ -40,6 +40,16 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
       setItems([])
       setTotal(0)
     } catch { /* silent */ }
+  }
+
+  const handleDelete = async (id) => {
+    try {
+      await deleteHistoryItem(id)
+      setItems(prev => prev.filter(i => i.id !== id))
+      setTotal(prev => prev - 1)
+    } catch (e) {
+      console.error('Delete failed:', e)
+    }
   }
 
   const filtered = filter === 'all' ? items : items.filter(i => i.mode === filter)
@@ -142,6 +152,13 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
                   transition={{ delay: Math.min(i * 0.03, 0.2) }}
                   className="group relative rounded-2xl bg-white border border-zinc-100 overflow-hidden spring-transition hover:border-zinc-200 hover:shadow-[0_4px_24px_-12px_rgba(0,0,0,0.06)]"
                 >
+                  <button
+                    onClick={(e) => { e.stopPropagation(); handleDelete(entry.id) }}
+                    className="absolute top-2 right-2 z-10 w-6 h-6 rounded-full bg-black/40 text-white flex items-center justify-center opacity-0 group-hover:opacity-100 spring-transition hover:bg-red-500"
+                    title="删除"
+                  >
+                    <Trash weight="bold" className="w-3 h-3" />
+                  </button>
                   <div className="aspect-[4/3] bg-zinc-50 flex items-center justify-center overflow-hidden">
                     {entry.imageUrl ? (
                       <img src={entry.imageUrl} alt="" className="w-full h-full object-cover" />

@@ -1,13 +1,21 @@
 const API_BASE = ''
 
 async function request(path, options = {}) {
+  const { timeoutMs = 20000, ...fetchOptions } = options
   const url = `${API_BASE}${path}`
-  const res = await fetch(url, options)
+  const controller = new AbortController()
+  const timer = setTimeout(() => controller.abort(), timeoutMs)
+  const res = await fetch(url, { ...fetchOptions, signal: controller.signal }).finally(() => clearTimeout(timer))
   if (!res.ok) {
     const detail = await res.json().catch(() => ({}))
     throw new Error(detail.detail || `Server returned ${res.status}`)
   }
-  return res.json()
+  const data = await res.json()
+  const requestId = res.headers.get('x-request-id')
+  if (requestId && data && typeof data === 'object') {
+    data._request_id = requestId
+  }
+  return data
 }
 
 export function checkHealth() {
@@ -64,6 +72,10 @@ export function clearHistory() {
   return request('/history', { method: 'DELETE' })
 }
 
+export function deleteHistoryItem(id) {
+  return request(`/history/item?id=${encodeURIComponent(id)}`, { method: 'DELETE' })
+}
+
 export function getHardwareStatus() {
   return request('/hardware/status')
 }
@@ -82,4 +94,8 @@ export function setTriggerConfig(config) {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(config)
   })
+}
+
+export function getRuntimeMetrics() {
+  return request('/metrics/runtime', { timeoutMs: 10000 })
 }

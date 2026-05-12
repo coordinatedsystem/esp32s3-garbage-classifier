@@ -1,16 +1,12 @@
-import { useState, useCallback, useEffect, useRef } from 'react'
+import { useState, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
 import { Cpu, Camera, ClockCounterClockwise, WifiHigh, Info, ImageSquare, Lightning, HandPointing, Ruler, Timer, Check } from '@phosphor-icons/react'
-import { getHardwareStatus, getHardwareImageUrl, getTriggerConfig, setTriggerConfig } from '../api'
-import usePolling from '../hooks/usePolling'
+import { getHardwareImageUrl, getTriggerConfig, setTriggerConfig } from '../api'
 
-export default function HardwarePanel() {
+export default function HardwarePanel({ status, loading }) {
   const [imgKey, setImgKey] = useState(0)
   const prevCaptureCount = useRef(null)
   const [imgError, setImgError] = useState(false)
-
-  const fetchStatus = useCallback(() => getHardwareStatus(), [])
-  const { data: status, loading } = usePolling(fetchStatus, { interval: 6000 })
 
   // 触发配置
   const [trigMode, setTrigMode] = useState('button')
@@ -60,6 +56,16 @@ export default function HardwarePanel() {
       setTrigSaving(false)
     }
   }
+
+  // SSE — 实时接收服务器推送的新采集事件，立即刷新图像
+  useEffect(() => {
+    const es = new EventSource('/events')
+    es.addEventListener('new_capture', () => {
+      setImgKey(k => k + 1)
+      setImgError(false)
+    })
+    return () => es.close()
+  }, [])
 
   useEffect(() => {
     if (status && status.capture_count !== undefined) {

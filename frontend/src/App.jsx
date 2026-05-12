@@ -1,7 +1,7 @@
 import { useState, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Trash, Leaf, Recycle, Warning, Cpu, Brain, Upload, HandPointing, Ruler } from '@phosphor-icons/react'
-import { checkHealth } from './api'
+import { checkHealth, getRuntimeMetrics, getHardwareStatus } from './api'
 import usePolling from './hooks/usePolling'
 import ModelSelector from './components/ModelSelector.jsx'
 import UploadPanel from './components/UploadPanel.jsx'
@@ -35,13 +35,19 @@ export default function App() {
 
   const fetchHealth = useCallback(() => checkHealth(), [])
   const { data: health, loading: healthLoading } = usePolling(fetchHealth, { interval: 10000 })
+  const fetchMetrics = useCallback(() => getRuntimeMetrics(), [])
+  const { data: metrics } = usePolling(fetchMetrics, { interval: 10000 })
+  const fetchHwStatus = useCallback(() => getHardwareStatus(), [])
+  const { data: hwStatus, loading: hwLoading } = usePolling(fetchHwStatus, { interval: 6000 })
 
   const serverOnline = health?.status === 'healthy'
-  const hardwareOnline = health?.hardware_online
+  const hardwareOnline = hwStatus?.online
   const latency = health?.latency
-  const captures = health?.hardware_captures || 0
+  const captures = hwStatus?.capture_count || 0
   const activeModel = health?.active_model || 'clip'
   const triggerMode = health?.trigger_config?.mode || 'button'
+  const queueDepth = metrics?.queue_depth ?? 0
+  const errorRatePct = metrics?.error_rate !== undefined ? (metrics.error_rate * 100).toFixed(1) : '—'
 
   const handleResult = useCallback((data, imageUrl) => {
     setResult(data)
@@ -115,19 +121,19 @@ export default function App() {
 
             {/* 硬件状态 */}
             <div className={`px-3 py-2.5 rounded-xl transition-colors ${
-              healthLoading ? 'bg-zinc-50' : hardwareOnline ? 'bg-indigo-50/60' : 'bg-zinc-50'
+              hwLoading ? 'bg-zinc-50' : hardwareOnline ? 'bg-indigo-50/60' : 'bg-zinc-50'
             }`}>
               <div className="flex items-center gap-2">
                 <span className={`w-2 h-2 rounded-full flex-shrink-0 ring-2 ${
-                  healthLoading ? 'bg-zinc-300 ring-zinc-100' :
+                  hwLoading ? 'bg-zinc-300 ring-zinc-100' :
                   hardwareOnline ? 'bg-indigo-500 ring-indigo-100' : 'bg-zinc-300 ring-zinc-100'
                 }`} />
                 <span className="text-xs font-medium text-zinc-500">硬件</span>
               </div>
               <p className={`text-[13px] font-semibold mt-0.5 pl-4 ${
-                healthLoading ? 'text-zinc-400' : hardwareOnline ? 'text-indigo-700' : 'text-zinc-400'
+                hwLoading ? 'text-zinc-400' : hardwareOnline ? 'text-indigo-700' : 'text-zinc-400'
               }`}>
-                {healthLoading ? '检测中...' : hardwareOnline ? `在线 · ${captures} 次采集` : '离线'}
+                {hwLoading ? '检测中...' : hardwareOnline ? `在线 · ${captures} 次采集` : '离线'}
               </p>
             </div>
 
@@ -159,11 +165,35 @@ export default function App() {
                 {TRIGGER_LABELS[triggerMode] || triggerMode}
               </p>
             </div>
+
+            {/* 推理队列 */}
+            <div className={`px-3 py-2.5 rounded-xl transition-colors ${
+              queueDepth > 0 ? 'bg-amber-50/60' : 'bg-zinc-50'
+            }`}>
+              <div className="flex items-center gap-2">
+                <Cpu weight="bold" className={`w-4 h-4 flex-shrink-0 ${queueDepth > 0 ? 'text-amber-500' : 'text-zinc-400'}`} />
+                <span className="text-xs font-medium text-zinc-500">推理队列</span>
+              </div>
+              <p className={`text-[13px] font-semibold mt-0.5 pl-6 ${queueDepth > 0 ? 'text-amber-700' : 'text-zinc-500'}`}>
+                {queueDepth}
+              </p>
+            </div>
+
+            {/* 请求错误率 */}
+            <div className="px-3 py-2.5 rounded-xl bg-zinc-50">
+              <div className="flex items-center gap-2">
+                <Warning weight="bold" className="w-4 h-4 text-zinc-400 flex-shrink-0" />
+                <span className="text-xs font-medium text-zinc-500">请求错误率</span>
+              </div>
+              <p className="text-[13px] font-semibold text-zinc-600 mt-0.5 pl-6">
+                {errorRatePct}%
+              </p>
+            </div>
           </div>
 
           {/* 底部版本 */}
           <div className="px-4 py-3 border-t border-zinc-100">
-            <p className="text-[10px] text-zinc-400">v4.1.0</p>
+            <p className="text-[10px] text-zinc-400">v5.0.0</p>
           </div>
         </nav>
 
@@ -174,7 +204,7 @@ export default function App() {
             <div className="max-w-[960px] mx-auto space-y-6">
               {/* 选项卡内容 — 全部保持挂载，仅隐藏非活跃面板 */}
               <div className={activeTab === 'hardware' ? '' : 'hidden'}>
-                <HardwarePanel />
+                <HardwarePanel status={hwStatus} loading={hwLoading} />
               </div>
 
               <div className={activeTab === 'model' ? '' : 'hidden'}>

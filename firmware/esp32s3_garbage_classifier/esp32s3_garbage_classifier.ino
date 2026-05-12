@@ -68,7 +68,7 @@ Adafruit_VL53L0X tof = Adafruit_VL53L0X();
 // 参数
 // ==============================
 #define HTTP_TIMEOUT_MS  10000
-#define FIRMWARE_VERSION "4.0.0"
+#define FIRMWARE_VERSION "5.0.0"
 
 // 颜色
 #define C_BLACK     ST7735_BLACK
@@ -95,6 +95,12 @@ unsigned long lastConfigFetch = 0;
 unsigned long lastTofRefresh = 0; // 屏幕 TOF 刷新计时
 bool    configChanged = false;    // 配置变更反馈标记
 unsigned long configMsgMs = 0;    // 配置消息显示计时
+unsigned long postCaptureUntil = 0;     // 结果页保持到期时间
+int lastCountdownSec = -1;              // 防重复刷新倒计时
+bool waitingDistanceClear = false;      // 自动触发后等待目标移开
+unsigned long distanceClearDeadline = 0;
+bool lastBootPressed = false;
+unsigned long lastHeartbeatMs = 0;
 
 // ==============================
 // 屏幕小工具
@@ -310,7 +316,7 @@ void fetchTriggerConfig() {
   if (WiFi.status() != WL_CONNECTED) return;
   WiFiClient client;
   HTTPClient http;
-  String url = "http://" + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "/trigger/config?source=esp32";
+  String url = "http://" + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "/trigger/config";
   http.begin(client, url);
   http.setTimeout(3000);
   int code = http.GET();
@@ -334,7 +340,6 @@ void fetchTriggerConfig() {
         triggerIntervalMs = ti;
         configChanged = true;
         configMsgMs   = millis();
-        delay(400);
         tft.fillRect(0, 140, 128, 20, C_BLACK);
         txt(2, 144, 1, C_GREEN, "Config OK");
         Serial.printf("[CFG] trigger=%s range=%d-%dmm cooldown=%dms interval=%dms\n",
@@ -344,6 +349,152 @@ void fetchTriggerConfig() {
     }
   }
   http.end();
+}
+
+void sendHeartbeat() {
+  if (WiFi.status() != WL_CONNECTED) return;
+  WiFiClient client;
+  HTTPClient http;
+  String url = "http://" + String(SERVER_HOST) + ":" + String(SERVER_PORT)
+             + "/hardware/heartbeat?device_id=ESP32-S3"
+             + "&firmware_version=" + String(FIRMWARE_VERSION)
+             + "&ip_address=" + WiFi.localIP().toString();
+  http.begin(client, url);
+  http.setTimeout(3000);
+  http.GET();
+  http.end();
+}
+
+bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen, int& statusCode, String& responseBody) {
+  const String boundary = "----ESP32Boundary";
+  const String head = "--" + boundary + "\r\n"
+                      "Content-Disposition: form-data; name=\"file\"; filename=\"cap.jpg\"\r\n"
+                      "Content-Type: image/jpeg\r\n\r\n";
+  const String foot = "\r\n--" + boundary + "--\r\n";
+  const size_t contentLen = head.length() + jpgLen + foot.length();
+
+  WiFiClient client;
+  if (!client.connect(SERVER_HOST, SERVER_PORT)) {
+    statusCode = -1;
+    return false;
+  }
+
+  String reqHead = "POST " + path + " HTTP/1.1\r\n";
+  reqHead += "Host: " + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "\r\n";
+  reqHead += "Content-Type: multipart/form-data; boundary=" + boundary + "\r\n";
+  reqHead += "Content-Length: " + String(contentLen) + "\r\n";
+  reqHead += "Connection: close\r\n\r\n";
+  client.print(reqHead);
+  client.print(head);
+
+  size_t sent = 0;
+  while (sent < jpgLen) {
+    size_t chunk = (jpgLen - sent > 1024) ? 1024 : (jpgLen - sent);
+    size_t written = client.write(jpgBuf + sent, chunk);
+    if (written == 0) {
+      client.stop();
+      statusCode = -2;
+      return false;
+    }
+    sent += written;
+    yield();
+  }
+  client.print(foot);
+
+  unsigned long start = millis();
+  while (!client.available() && client.connected()) {
+    if (millis() - start > HTTP_TIMEOUT_MS) {
+      client.stop();
+      statusCode = -3;
+      return false;
+    }
+    delay(1);
+  }
+
+  String statusLine = client.readStringUntil('\n');
+  int sp1 = statusLine.indexOf(' ');
+  int sp2 = statusLine.indexOf(' ', sp1 + 1);
+  statusCode = (sp1 >= 0 && sp2 > sp1) ? statusLine.substring(sp1 + 1, sp2).toInt() : -4;
+
+  bool chunked = false;
+  int contentLength = -1;
+  while (client.connected()) {
+    String line = client.readStringUntil('\n');
+    String lower = line;
+    lower.toLowerCase();
+    if (lower.startsWith("transfer-encoding:") && lower.indexOf("chunked") >= 0) {
+      chunked = true;
+    }
+    if (lower.startsWith("content-length:")) {
+      int colon = line.indexOf(':');
+      if (colon >= 0) contentLength = line.substring(colon + 1).toInt();
+    }
+    if (line == "\r" || line.length() == 0) break;
+  }
+
+  responseBody = "";
+  responseBody.reserve(512);
+
+  if (chunked) {
+    while (true) {
+      String lenLine = client.readStringUntil('\n');
+      lenLine.trim();
+      int semi = lenLine.indexOf(';');
+      if (semi >= 0) lenLine = lenLine.substring(0, semi);
+      int chunkLen = (int)strtol(lenLine.c_str(), NULL, 16);
+      if (chunkLen <= 0) {
+        client.readStringUntil('\n');  // consume final CRLF
+        break;
+      }
+
+      int remaining = chunkLen;
+      while (remaining > 0) {
+        start = millis();
+        while (!client.available()) {
+          if (millis() - start > HTTP_TIMEOUT_MS) {
+            client.stop();
+            return false;
+          }
+          delay(1);
+        }
+        char buf[128];
+        int toRead = remaining > (int)sizeof(buf) ? (int)sizeof(buf) : remaining;
+        int n = client.readBytes(buf, toRead);
+        for (int i = 0; i < n; i++) responseBody += buf[i];
+        remaining -= n;
+      }
+      client.readStringUntil('\n');  // consume chunk trailing CRLF
+    }
+  } else if (contentLength >= 0) {
+    int remaining = contentLength;
+    while (remaining > 0) {
+      start = millis();
+      while (!client.available()) {
+        if (millis() - start > HTTP_TIMEOUT_MS) {
+          client.stop();
+          return false;
+        }
+        delay(1);
+      }
+      char buf[128];
+      int toRead = remaining > (int)sizeof(buf) ? (int)sizeof(buf) : remaining;
+      int n = client.readBytes(buf, toRead);
+      for (int i = 0; i < n; i++) responseBody += buf[i];
+      remaining -= n;
+    }
+  } else {
+    start = millis();
+    while (client.connected() || client.available()) {
+      while (client.available()) {
+        responseBody += (char)client.read();
+        start = millis();
+      }
+      if (millis() - start > HTTP_TIMEOUT_MS) break;
+      delay(1);
+    }
+  }
+  client.stop();
+  return true;
 }
 
 // ==============================
@@ -356,6 +507,11 @@ bool captureAndClassify() {
   cls();
   bar("Capturing...");
   txt(0, 50, 2, C_WHITE, "Photo...");
+
+  // 丢弃传感器缓冲区的旧帧，确保每次拍照都是最新的画面
+  camera_fb_t *stale = esp_camera_fb_get();
+  if (stale) esp_camera_fb_return(stale);
+  delay(50);  // 给传感器一点时间开始新一帧曝光
 
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) { err("Capture fail"); return false; }
@@ -386,38 +542,13 @@ bool captureAndClassify() {
 
   bar("Classifying...");
 
-  // 使用 PSRAM 分配上传缓冲区，避免内部 RAM 碎片化
-  String boundary = "----ESP32Boundary";
-  String head = "--" + boundary + "\r\n";
-  head += "Content-Disposition: form-data; name=\"file\"; filename=\"cap.jpg\"\r\n";
-  head += "Content-Type: image/jpeg\r\n\r\n";
-  String foot = "\r\n--" + boundary + "--\r\n";
-  size_t bodySize = head.length() + jpgLen + foot.length();
-
-  uint8_t *bodyBuf = (uint8_t *)heap_caps_malloc(bodySize, MALLOC_CAP_SPIRAM);
-  if (!bodyBuf) {
-    // PSRAM 不可用，回退到内部 RAM
-    bodyBuf = (uint8_t *)malloc(bodySize);
-  }
-  if (!bodyBuf) { free(jpgBuf); err("No memory"); return false; }
-  memcpy(bodyBuf, head.c_str(), head.length());
-  memcpy(bodyBuf + head.length(), jpgBuf, jpgLen);
-  memcpy(bodyBuf + head.length() + jpgLen, foot.c_str(), foot.length());
-
-  HTTPClient http;
   String hostStr = String(SERVER_HOST) + ":" + String(SERVER_PORT);
-  String url = "http://" + hostStr
-             + "/classify?source=esp32&ip=" + WiFi.localIP().toString()
-             + "&trigger_mode=" + triggerMode;
-  http.begin(url);
-  http.addHeader("Content-Type", "multipart/form-data; boundary=" + boundary);
-  http.setTimeout(HTTP_TIMEOUT_MS);
+  String path = "/classify?source=esp32&ip=" + WiFi.localIP().toString() + "&trigger_mode=" + triggerMode;
+  int code = 0;
+  String body;
+  bool posted = postMultipartJpeg(path, jpgBuf, jpgLen, code, body);
 
-  int code = http.POST(bodyBuf, bodySize);
-  free(bodyBuf);
-
-  if (code != 200) {
-    http.end();
+  if (!posted || code != 200) {
     free(jpgBuf);
 
     cls();
@@ -428,20 +559,33 @@ bool captureAndClassify() {
     txt(30, 55, 1, C_YELLOW, hostStr.c_str());
     txt(0, 70, 1, C_DARKGREY, "RSSI:");
     num(40, 70, 1, C_YELLOW, WiFi.RSSI());
-    txt(0, 95, 1, C_DARKGREY, "Retry in 3s...");
-    delay(3000);
-    drawReady();
+    txt(0, 95, 1, C_DARKGREY, "Retry later");
     return false;
   }
-
-  String body = http.getString();
-  http.end();
 
   unsigned long t2 = millis();
 
   // 解析 — 使用堆分配避免大对象占栈
+  int jsonStart = body.indexOf('{');
+  int jsonEnd = body.lastIndexOf('}');
+  if (jsonStart >= 0 && jsonEnd > jsonStart) {
+    body = body.substring(jsonStart, jsonEnd + 1);
+  }
+
   DynamicJsonDocument doc(4096);
-  if (body.length() == 0 || deserializeJson(doc, body)) { free(jpgBuf); err("JSON error"); return false; }
+  DeserializationError jerr = deserializeJson(doc, body);
+  if (body.length() == 0 || jerr) {
+    Serial.printf("[JSON] parse failed: %s, code=%d, len=%d\n", jerr.c_str(), code, body.length());
+    if (body.length() > 0) {
+      String preview = body.substring(0, body.length() > 80 ? 80 : body.length());
+      preview.replace('\n', ' ');
+      preview.replace('\r', ' ');
+      Serial.printf("[JSON] preview: %s\n", preview.c_str());
+    }
+    free(jpgBuf);
+    err("JSON error");
+    return false;
+  }
 
   String itemEn  = doc["result"]["item_label"] | "?";
   float  conf    = doc["result"]["confidence"] | 0.0f;
@@ -609,9 +753,11 @@ void setup() {
   if (serverHealth()) txt(0, 130, 1, C_GREEN, "Server OK");
   else                txt(0, 130, 1, C_YELLOW, "Server ?");
 
-  // 拉取触发配置
+  // 拉取触发配置（错开心跳和配置拉取的首次触发时间）
+  sendHeartbeat();
+  lastHeartbeatMs = millis();
   fetchTriggerConfig();
-  lastConfigFetch = millis();
+  lastConfigFetch = millis() + 15000;  // 将 30s 定时器错开 15s
 
   delay(1500);
   drawReady();
@@ -635,7 +781,11 @@ void loop() {
     return;
   }
 
-  // 每 30 秒同步触发配置
+  // 每 30 秒发送心跳并同步触发配置
+  if (now - lastHeartbeatMs > 30000) {
+    sendHeartbeat();
+    lastHeartbeatMs = now;
+  }
   if (now - lastConfigFetch > 30000) {
     fetchTriggerConfig();
     lastConfigFetch = now;
@@ -647,29 +797,40 @@ void loop() {
     drawReady();
   }
 
+  if (postCaptureUntil > now) {
+    int secLeft = (int)((postCaptureUntil - now + 999) / 1000);
+    if (secLeft != lastCountdownSec) {
+      lastCountdownSec = secLeft;
+      tft.fillRect(0, 140, 128, 20, C_BLACK);
+      tft.setCursor(42, 144);
+      tft.setTextSize(1);
+      tft.setTextColor(C_DARKGREY);
+      tft.print(secLeft);
+      tft.print("s...");
+    }
+    delay(10);
+    return;
+  } else if (lastCountdownSec != -1) {
+    lastCountdownSec = -1;
+    drawReady();
+  }
+
   if (triggerMode == "button") {
     // === 按钮触发 ===
-    if (digitalRead(PIN_BOOT) == LOW) {
-      delay(50);
+    bool bootPressed = (digitalRead(PIN_BOOT) == LOW);
+    if (bootPressed && !lastBootPressed) {
+      delay(30);
       if (digitalRead(PIN_BOOT) == LOW) {
         captureAndClassify();
-        while (digitalRead(PIN_BOOT) == LOW) delay(10);
-
+        postCaptureUntil = millis() + 5000;
+        lastCountdownSec = -1;
+        waitingDistanceClear = false;
         fetchTriggerConfig();
+        lastHeartbeatMs = millis();
         lastConfigFetch = millis();
-
-        for (int i = 5; i > 0; i--) {
-          tft.fillRect(0, 140, 128, 20, C_BLACK);
-          tft.setCursor(50, 144);
-          tft.setTextSize(1);
-          tft.setTextColor(C_DARKGREY);
-          tft.print(i);
-          tft.print("s...");
-          delay(1000);
-        }
-        drawReady();
       }
     }
+    lastBootPressed = bootPressed;
   } else {
     // === 距离触发 ===
     int dist = readTOF();
@@ -694,6 +855,15 @@ void loop() {
       }
     }
 
+    if (waitingDistanceClear) {
+      if (dist < distanceMin || dist > distanceMax || now > distanceClearDeadline) {
+        waitingDistanceClear = false;
+        drawReady();
+      }
+      delay(10);
+      return;
+    }
+
     if (dist >= distanceMin && dist <= distanceMax) {
       if (presenceStart == 0) {
         presenceStart = now;
@@ -716,20 +886,13 @@ void loop() {
         presenceStart = 0;
 
         bar("Auto capture!");
-        delay(300);
         captureAndClassify();
+        waitingDistanceClear = true;
+        distanceClearDeadline = now + 10000;
 
         fetchTriggerConfig();
+        lastHeartbeatMs = now;
         lastConfigFetch = millis();
-
-        // 等待物体移开（最多 10 秒）
-        for (int w = 0; w < 200; w++) {
-          int d2 = readTOF();
-          if (d2 < distanceMin || d2 > distanceMax) break;
-          delay(50);
-        }
-        delay(500);
-        drawReady();
       }
     } else {
       if (presenceStart != 0) {

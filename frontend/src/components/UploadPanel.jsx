@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Plus, UploadSimple } from '@phosphor-icons/react'
 import { classifyImage, detectImage } from '../api'
@@ -14,6 +14,7 @@ export default function UploadPanel({ mode, isLoading, setIsLoading, setError, o
       return
     }
 
+    if (preview) URL.revokeObjectURL(preview)
     const url = URL.createObjectURL(file)
     setPreview(url)
     setIsLoading(true)
@@ -30,7 +31,7 @@ export default function UploadPanel({ mode, isLoading, setIsLoading, setError, o
     } finally {
       setIsLoading(false)
     }
-  }, [mode, setIsLoading, setError, onResult])
+  }, [mode, setIsLoading, setError, onResult, preview])
 
   const handleDrop = useCallback((e) => {
     e.preventDefault()
@@ -47,6 +48,12 @@ export default function UploadPanel({ mode, isLoading, setIsLoading, setError, o
     if (fileRef.current) fileRef.current.value = ''
     onClear()
   }
+
+  useEffect(() => {
+    return () => {
+      if (preview) URL.revokeObjectURL(preview)
+    }
+  }, [preview])
 
   const modeLabels = {
     clip: 'CLIP 分类', doubao: '豆包 Vision', qwen: '千问 Vision',

@@ -128,14 +128,16 @@ const int   SERVER_PORT   = 8085;
 └──────────────┘                    │   :8085      │                 └──────────────┘
      │                                      │                              │
      │ POST /classify?source=esp32          │ 共享状态 (threading.Lock)     │ 左侧 220px 导航栏
-     │ GET  /trigger/config?source=esp32    │ 多模型路由 + 自动回退        │  └ 系统状态卡片
-     │ (每 30s, 兼作心跳)                   │                             │ usePolling 每 10s
-     └──────────────────────────────────────┘                             │ 轮询 /health
+     │ GET  /hardware/heartbeat             │ 多模型路由 + 自动回退        │  └ 系统状态卡片
+     │ GET  /trigger/config (每 30s)        │ SSE /events 实时推送         │ EventSource /events
+     └──────────────────────────────────────┘                              │ 实时接收 new_capture
 ```
 
 **模型路由**：前端设置激活模型 → ESP32 始终调用 `/classify` → 后端按激活模型路由（CLIP / 豆包 / 千问 / 自定义）。ESP32 无需刷写固件即可跟随前端模型切换。视觉模型未配置或调用失败时自动回退到 CLIP。
 
-**硬件在线检测**：ESP32 每 30 秒拉取 `/trigger/config?source=esp32` 兼作心跳。服务端记录 `last_seen` 时间戳，超过 60 秒无心跳则判定离线。
+**硬件在线检测**：ESP32 每 30 秒调用 `/hardware/heartbeat` 上报心跳，并拉取 `/trigger/config` 同步触发参数。服务端记录 `last_seen` 时间戳，超过 60 秒无心跳则判定离线。
+
+**实时推送**：后端通过 SSE（Server-Sent Events）在 ESP32 拍照后即时推送 `new_capture` 事件到前端，前端无需等待轮询即可立即刷新采集图像。
 
 ## API 接口
 
@@ -150,11 +152,15 @@ const int   SERVER_PORT   = 8085;
 | POST | `/model/config` | 配置视觉模型 API Key/Base URL/Model Name |
 | GET  | `/history?page=1&limit=20` | 服务端历史记录 (含 model_used) |
 | DELETE | `/history` | 清空历史记录 |
+| DELETE | `/history/item?id=xxx` | 删除单条历史记录 |
 | POST | `/hardware/capture` | ESP32 上传采集图片 |
 | GET  | `/hardware/image` | 获取最新硬件采集图片 (image/jpeg) |
 | GET  | `/hardware/status` | 硬件状态 (在线/IP/采集次数/固件版本) |
-| GET  | `/trigger/config` | 获取触发配置。`?source=esp32` 兼作硬件心跳 |
+| GET  | `/hardware/heartbeat` | 硬件心跳上报 (`device_id/firmware_version/ip_address`) |
+| GET  | `/trigger/config` | 获取触发配置 |
 | POST | `/trigger/config` | 设置触发配置 |
+| GET  | `/events` | SSE 实时推送 (客户端订阅 new_capture 事件) |
+| GET  | `/metrics/runtime` | 运行时指标 (QPS/队列深度/推理统计)
 
 ## 前端功能模块
 
@@ -199,9 +205,21 @@ const int   SERVER_PORT   = 8085;
 
 ## 变更日志
 
+### v5.0.0
+- **SSE 实时推送**：后端新增 `/events` 端点（Server-Sent Events），ESP32 拍照后立即推送 `new_capture` 事件到前端，HardwarePanel 通过 `EventSource` 订阅，图片刷新零延迟
+- **摄像头旧帧修复**：固件 `captureAndClassify()` 在正式拍照前丢弃传感器缓冲区内的旧帧（`esp_camera_fb_get` + `esp_camera_fb_return`），确保每次 BOOT 键按下提交的是当前画面而非上一张
+- **线程安全增强**：`last_capture_image` 全局变量所有读写路径统一使用 `state_lock` 保护（`/classify`、`/hardware/capture`、`/hardware/image`）
+- **自适应轮询**：`usePolling` Hook 在请求失败时自动切换到 2 秒快速重试，成功后恢复标准间隔，解决网络恢复后长时间等待问题
+- **React 18 StrictMode 修复**：`usePolling` 的 `mountedRef` 在 mount effect 中重置为 `true`，修复严格模式双挂载导致的状态永不更新 bug
+- **单条历史记录删除**：新增 `DELETE /history/item?id=xxx` 端点，前端 HistoryList 悬浮显示删除按钮
+- **状态提升**：硬件状态轮询从 HardwarePanel 提升至 App 层，侧栏与硬件面板共享同一数据源，消除状态不一致
+- **触发配置反馈**：HardwarePanel 保存触发参数后显示实时反馈（保存中 → 已同步），清晰的状态提示
+- **健康检查心跳去耦**：新增 `/hardware/heartbeat` 专用端点，硬件在线检测与触发配置请求分离
+- **可观测性中间件**：请求计数、延迟统计、错误率追踪，新增 `/metrics/runtime` 运行时指标端点
+
 ### v4.1.0
 - **侧栏重新设计**：左侧导航栏扩展至 220px，集成系统状态卡片（服务在线、硬件心跳、当前模型、触发模式），实时轮播刷新
-- **硬件心跳检测**：ESP32 每 30 秒 `/trigger/config?source=esp32` 兼作心跳，服务端超时 60 秒自动判定离线
+- **硬件心跳检测**：ESP32 每 30 秒调用 `/hardware/heartbeat`，服务端超时 60 秒自动判定离线
 - **移除顶部状态栏**：StatusBar 组件废弃，系统状态信息整合至侧栏
 - **面板保持挂载**：标签页切换改为 `hidden` 显隐，不再卸载重载，消除切换延迟
 - **代码整理**：`hardware_capture` 去重调用 `_add_history`、修复 `trigger_config` 竞态条件、setTimeout 清理、API Key 表单隔离、字体统一
