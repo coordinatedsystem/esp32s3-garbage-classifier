@@ -67,7 +67,7 @@ Adafruit_VL53L0X tof = Adafruit_VL53L0X();
 // ==============================
 // 参数
 // ==============================
-#define HTTP_TIMEOUT_MS  30000
+#define HTTP_TIMEOUT_MS  15000
 #define FIRMWARE_VERSION "5.1.1"
 
 // 颜色
@@ -399,12 +399,14 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
 
   WiFiClient client;
   client.setTimeout(5000);
-  if (!client.connect(SERVER_HOST, SERVER_PORT)) {
-    statusCode = -1;
-    return false;
+  client.stop();  // 清理 socket 状态，防止残留连接
+  for (int retry = 0; retry < 2; retry++) {
+    if (retry > 0) { delay(300); client.stop(); }
+    if (client.connect(SERVER_HOST, SERVER_PORT)) break;
+    if (retry == 1) { statusCode = -1; return false; }
   }
 
-  // Send request line + all headers + multipart head in one write
+  // 合并所有请求头 → 一次发送，减少 TCP 分段
   String req = "POST " + path + " HTTP/1.1\r\n";
   req += "Host: " + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "\r\n";
   req += "Content-Type: multipart/form-data; boundary=" + boundary + "\r\n";
@@ -413,13 +415,14 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
   req += head;
   client.print(req);
 
-  // Write JPEG body in 8KB chunks — no yield, WiFiClient handles TCP internally
+  // 分块写入 JPEG 体
   size_t sent = 0;
   while (sent < jpgLen) {
-    size_t chunk = (jpgLen - sent > 8192) ? 8192 : (jpgLen - sent);
+    size_t chunk = (jpgLen - sent > 4096) ? 4096 : (jpgLen - sent);
     size_t written = client.write(jpgBuf + sent, chunk);
     if (written == 0) { client.stop(); statusCode = -2; return false; }
     sent += written;
+    yield();  // 让出 CPU 给 TCP/IP 栈
   }
   client.print(foot);
   client.flush();
@@ -427,7 +430,7 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
   // Wait for response
   unsigned long start = millis();
   while (!client.available() && client.connected()) {
-    if (millis() - start > 10000) { client.stop(); statusCode = -3; return false; }
+    if (millis() - start > HTTP_TIMEOUT_MS) { client.stop(); statusCode = -3; return false; }
     delay(1);
   }
 
@@ -458,7 +461,7 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
     while (remaining > 0 && client.connected()) {
       start = millis();
       while (!client.available() && client.connected()) {
-        if (millis() - start > 10000) { client.stop(); return false; }
+        if (millis() - start > HTTP_TIMEOUT_MS) { client.stop(); return false; }
         delay(1);
       }
       char buf[256];
