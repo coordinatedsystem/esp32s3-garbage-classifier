@@ -67,5 +67,5 @@ export default function usePolling(fetchFn, { interval = 15000, enabled = true }
     }
   }, [interval, enabled, execute])
 
-  return { data, loading, error, refetch: execute }
+  return { data, loading, error, refetch: execute, setData }
 }

@@ -225,6 +225,8 @@ def _call_vision_llm(image_data: bytes, provider_id: str) -> tuple:
 state_lock = threading.Lock()
 server_start_time = time.time()
 
+HARDWARE_STALE_SECONDS = 35  # ESP32 每 30s 发心跳，超 35s 未收到视为离线
+
 hardware_state = {
     "online": False,
     "last_seen": None,
@@ -234,6 +236,23 @@ hardware_state = {
     "device_id": "ESP32-S3",
     "firmware_version": None
 }
+_hardware_was_online = False  # 跟踪状态变化，用于 SSE 推送
+
+def _update_hardware_online():
+    """根据 last_seen 更新时间戳，返回 (当前online, 是否变化)"""
+    global _hardware_was_online
+    now = time.time()
+    with state_lock:
+        was_online = hardware_state["online"]
+        last_seen = hardware_state["last_seen"]
+        if was_online and last_seen and (now - last_seen > HARDWARE_STALE_SECONDS):
+            hardware_state["online"] = False
+        elif not was_online and last_seen and (now - last_seen <= HARDWARE_STALE_SECONDS):
+            pass  # _mark_hardware_online 会设置 online=True
+        is_online = hardware_state["online"]
+        changed = (was_online != is_online) or (_hardware_was_online != is_online)
+        _hardware_was_online = is_online
+        return is_online, changed
 last_capture_image = None  # raw JPEG bytes
 server_history = []
 HISTORY_MAX = 50
@@ -266,6 +285,15 @@ async def _sse_notify(event_type, data):
             q.put_nowait({"event": event_type, "data": data})
         except asyncio.QueueFull:
             pass
+
+
+async def _hardware_status_checker():
+    """后台任务：每 5 秒检查硬件在线状态，变化时通过 SSE 推送"""
+    while True:
+        await asyncio.sleep(5)
+        is_online, changed = _update_hardware_online()
+        if changed:
+            await _sse_notify("hw_status", {"online": is_online})
 
 
 def _make_thumbnail(image_data: bytes, max_edge: int = 320) -> str:
@@ -571,16 +599,9 @@ async def classify_image(
 @app.get("/health")
 async def health():
     uptime = time.time() - server_start_time
-    now = time.time()
+    hw_online, _ = _update_hardware_online()
     with state_lock:
-        hw_online = hardware_state["online"]
-        last_seen = hardware_state["last_seen"]
         capture_count = hardware_state["capture_count"]
-    # 60 秒无心跳视为离线
-    if hw_online and last_seen and (now - last_seen > 60):
-        hw_online = False
-    elif not last_seen:
-        hw_online = False
     with state_lock:
         tc = dict(trigger_config)
     return {
@@ -908,6 +929,7 @@ async def hardware_image():
 @app.get("/hardware/status")
 async def hardware_status():
     """获取硬件连接状态"""
+    _update_hardware_online()
     with state_lock:
         status = dict(hardware_state)
     return status
@@ -996,6 +1018,11 @@ if os.path.exists(FRONTEND_DIR):
         return {"error": "frontend not built — run: cd frontend && npm run build"}
 
     app.mount("/assets", StaticFiles(directory=os.path.join(FRONTEND_DIR, "assets")), name="assets")
+
+
+@app.on_event("startup")
+async def startup():
+    asyncio.create_task(_hardware_status_checker())
 
 
 # ===================== 启动服务 =====================

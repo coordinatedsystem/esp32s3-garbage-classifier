@@ -6,7 +6,7 @@ import usePolling from '../hooks/usePolling'
 
 export default function StatusBar() {
   const fetchHealth = useCallback(() => checkHealth(), [])
-  const { data: health, loading } = usePolling(fetchHealth, { interval: 10000 })
+  const { data: health, loading } = usePolling(fetchHealth, { interval: 5000 })
 
   const serverOnline = health?.status === 'healthy'
   const hardwareOnline = health?.hardware_online

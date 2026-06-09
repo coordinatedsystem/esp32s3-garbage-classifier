@@ -67,7 +67,7 @@ Adafruit_VL53L0X tof = Adafruit_VL53L0X();
 // ==============================
 // 参数
 // ==============================
-#define HTTP_TIMEOUT_MS  10000
+#define HTTP_TIMEOUT_MS  30000
 #define FIRMWARE_VERSION "5.0.0"
 
 // 颜色
@@ -274,8 +274,10 @@ bool serverHealth() {
   String url = "http://" + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "/health";
   http.begin(client, url);
   http.setTimeout(5000);
+  http.addHeader("Connection", "close");
   int code = http.GET();
   http.end();
+  client.stop();
   return (code == 200);
 }
 
@@ -319,6 +321,7 @@ void fetchTriggerConfig() {
   String url = "http://" + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "/trigger/config";
   http.begin(client, url);
   http.setTimeout(3000);
+  http.addHeader("Connection", "close");
   int code = http.GET();
   if (code == 200) {
     String body = http.getString();
@@ -349,6 +352,7 @@ void fetchTriggerConfig() {
     }
   }
   http.end();
+  client.stop();
 }
 
 void sendHeartbeat() {
@@ -361,8 +365,10 @@ void sendHeartbeat() {
              + "&ip_address=" + WiFi.localIP().toString();
   http.begin(client, url);
   http.setTimeout(3000);
+  http.addHeader("Connection", "close");
   http.GET();
   http.end();
+  client.stop();
 }
 
 bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen, int& statusCode, String& responseBody) {
@@ -373,10 +379,13 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
   const String foot = "\r\n--" + boundary + "--\r\n";
   const size_t contentLen = head.length() + jpgLen + foot.length();
 
+  // TCP connect 重试，解决瞬时 socket 耗尽问题
   WiFiClient client;
-  if (!client.connect(SERVER_HOST, SERVER_PORT)) {
-    statusCode = -1;
-    return false;
+  client.stop();  // 确保干净初始状态
+  for (int retry = 0; retry < 3; retry++) {
+    if (retry > 0) { delay(500); client.stop(); }
+    if (client.connect(SERVER_HOST, SERVER_PORT)) break;
+    if (retry == 2) { statusCode = -1; return false; }
   }
 
   String reqHead = "POST " + path + " HTTP/1.1\r\n";
@@ -391,11 +400,7 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
   while (sent < jpgLen) {
     size_t chunk = (jpgLen - sent > 1024) ? 1024 : (jpgLen - sent);
     size_t written = client.write(jpgBuf + sent, chunk);
-    if (written == 0) {
-      client.stop();
-      statusCode = -2;
-      return false;
-    }
+    if (written == 0) { client.stop(); statusCode = -2; return false; }
     sent += written;
     yield();
   }
@@ -403,11 +408,7 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
 
   unsigned long start = millis();
   while (!client.available() && client.connected()) {
-    if (millis() - start > HTTP_TIMEOUT_MS) {
-      client.stop();
-      statusCode = -3;
-      return false;
-    }
+    if (millis() - start > HTTP_TIMEOUT_MS) { client.stop(); statusCode = -3; return false; }
     delay(1);
   }
 
@@ -422,9 +423,7 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
     String line = client.readStringUntil('\n');
     String lower = line;
     lower.toLowerCase();
-    if (lower.startsWith("transfer-encoding:") && lower.indexOf("chunked") >= 0) {
-      chunked = true;
-    }
+    if (lower.startsWith("transfer-encoding:") && lower.indexOf("chunked") >= 0) chunked = true;
     if (lower.startsWith("content-length:")) {
       int colon = line.indexOf(':');
       if (colon >= 0) contentLength = line.substring(colon + 1).toInt();
@@ -442,19 +441,13 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
       int semi = lenLine.indexOf(';');
       if (semi >= 0) lenLine = lenLine.substring(0, semi);
       int chunkLen = (int)strtol(lenLine.c_str(), NULL, 16);
-      if (chunkLen <= 0) {
-        client.readStringUntil('\n');  // consume final CRLF
-        break;
-      }
+      if (chunkLen <= 0) { client.readStringUntil('\n'); break; }
 
       int remaining = chunkLen;
       while (remaining > 0) {
         start = millis();
         while (!client.available()) {
-          if (millis() - start > HTTP_TIMEOUT_MS) {
-            client.stop();
-            return false;
-          }
+          if (millis() - start > HTTP_TIMEOUT_MS) { client.stop(); return false; }
           delay(1);
         }
         char buf[128];
@@ -463,17 +456,14 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
         for (int i = 0; i < n; i++) responseBody += buf[i];
         remaining -= n;
       }
-      client.readStringUntil('\n');  // consume chunk trailing CRLF
+      client.readStringUntil('\n');
     }
   } else if (contentLength >= 0) {
     int remaining = contentLength;
     while (remaining > 0) {
       start = millis();
       while (!client.available()) {
-        if (millis() - start > HTTP_TIMEOUT_MS) {
-          client.stop();
-          return false;
-        }
+        if (millis() - start > HTTP_TIMEOUT_MS) { client.stop(); return false; }
         delay(1);
       }
       char buf[128];
@@ -485,10 +475,7 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
   } else {
     start = millis();
     while (client.connected() || client.available()) {
-      while (client.available()) {
-        responseBody += (char)client.read();
-        start = millis();
-      }
+      while (client.available()) { responseBody += (char)client.read(); start = millis(); }
       if (millis() - start > HTTP_TIMEOUT_MS) break;
       delay(1);
     }

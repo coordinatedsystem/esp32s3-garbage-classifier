@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react'
+import { useState, useCallback, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Trash, Leaf, Recycle, Warning, Cpu, Brain, Upload, HandPointing, Ruler } from '@phosphor-icons/react'
 import { checkHealth, getRuntimeMetrics, getHardwareStatus } from './api'
@@ -34,11 +34,23 @@ export default function App() {
   const [activeTab, setActiveTab] = useState('hardware')
 
   const fetchHealth = useCallback(() => checkHealth(), [])
-  const { data: health, loading: healthLoading } = usePolling(fetchHealth, { interval: 10000 })
+  const { data: health, loading: healthLoading } = usePolling(fetchHealth, { interval: 5000 })
   const fetchMetrics = useCallback(() => getRuntimeMetrics(), [])
   const { data: metrics } = usePolling(fetchMetrics, { interval: 10000 })
   const fetchHwStatus = useCallback(() => getHardwareStatus(), [])
-  const { data: hwStatus, loading: hwLoading } = usePolling(fetchHwStatus, { interval: 6000 })
+  const { data: hwStatus, loading: hwLoading, setData: setHwStatus } = usePolling(fetchHwStatus, { interval: 3000 })
+
+  // SSE 实时监听硬件状态变化
+  useEffect(() => {
+    const es = new EventSource('/events')
+    es.addEventListener('hw_status', (e) => {
+      try {
+        const { online } = JSON.parse(e.data)
+        setHwStatus(prev => prev ? { ...prev, online } : { online })
+      } catch {}
+    })
+    return () => es.close()
+  }, [setHwStatus])
 
   const serverOnline = health?.status === 'healthy'
   const hardwareOnline = hwStatus?.online
