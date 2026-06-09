@@ -17,7 +17,6 @@
 #include "wifi_config.h"
 #include "img_converters.h"   // fmt2jpg
 #include "esp_heap_caps.h"    // heap_caps_malloc (PSRAM)
-#include "esp_task_wdt.h"   // hardware watchdog
 
 // ==============================
 // 屏幕引脚 (软件SPI)
@@ -69,7 +68,7 @@ Adafruit_VL53L0X tof = Adafruit_VL53L0X();
 // 参数
 // ==============================
 #define HTTP_TIMEOUT_MS  30000
-#define FIRMWARE_VERSION "5.0.0"
+#define FIRMWARE_VERSION "5.1.1"
 
 // 颜色
 #define C_BLACK     ST7735_BLACK
@@ -392,115 +391,91 @@ void sendHeartbeat() {
 }
 
 bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen, int& statusCode, String& responseBody) {
-  static const char boundary[] = "----ESP32Boundary";
-  static const char head[] =
-      "------ESP32Boundary\r\n"
-      "Content-Disposition: form-data; name=\"file\"; filename=\"cap.jpg\"\r\n"
-      "Content-Type: image/jpeg\r\n\r\n";
-  static const char foot[] = "\r\n------ESP32Boundary--\r\n";
-  const size_t contentLen = strlen(head) + jpgLen + strlen(foot);
+  const String boundary = "----ESP32Boundary";
+  const String head = "--" + boundary + "\r\n"
+                      "Content-Disposition: form-data; name=\"file\"; filename=\"cap.jpg\"\r\n"
+                      "Content-Type: image/jpeg\r\n\r\n";
+  const String foot = "\r\n--" + boundary + "--\r\n";
 
-  // TCP connect 重试，解决瞬时 socket 耗尽问题
   WiFiClient client;
-  client.stop();  // 确保干净初始状态
-  for (int retry = 0; retry < 3; retry++) {
-    if (retry > 0) { delay(500); client.stop(); }
-    if (client.connect(SERVER_HOST, SERVER_PORT)) break;
-    if (retry == 2) { statusCode = -1; return false; }
+  client.setTimeout(5000);
+  if (!client.connect(SERVER_HOST, SERVER_PORT)) {
+    statusCode = -1;
+    return false;
   }
 
-  client.setNoDelay(true);  // disable Nagle for lower latency on small POSTs
+  // Send request line + all headers + multipart head in one write
+  String req = "POST " + path + " HTTP/1.1\r\n";
+  req += "Host: " + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "\r\n";
+  req += "Content-Type: multipart/form-data; boundary=" + boundary + "\r\n";
+  req += "Content-Length: " + String(head.length() + jpgLen + foot.length()) + "\r\n";
+  req += "Connection: close\r\n\r\n";
+  req += head;
+  client.print(req);
 
-  client.printf("POST %s HTTP/1.1\r\n", path.c_str());
-  client.printf("Host: %s:%d\r\n", SERVER_HOST, SERVER_PORT);
-  client.printf("Content-Type: multipart/form-data; boundary=%s\r\n", boundary);
-  client.printf("Content-Length: %u\r\n", (unsigned int)contentLen);
-  client.print("Connection: close\r\n\r\n");
-  client.print(head);
-
+  // Write JPEG body in 8KB chunks — no yield, WiFiClient handles TCP internally
   size_t sent = 0;
   while (sent < jpgLen) {
-    size_t chunk = (jpgLen - sent > 1024) ? 1024 : (jpgLen - sent);
+    size_t chunk = (jpgLen - sent > 8192) ? 8192 : (jpgLen - sent);
     size_t written = client.write(jpgBuf + sent, chunk);
     if (written == 0) { client.stop(); statusCode = -2; return false; }
     sent += written;
-    yield();
   }
   client.print(foot);
+  client.flush();
 
+  // Wait for response
   unsigned long start = millis();
   while (!client.available() && client.connected()) {
-    if (millis() - start > HTTP_TIMEOUT_MS) { client.stop(); statusCode = -3; return false; }
+    if (millis() - start > 10000) { client.stop(); statusCode = -3; return false; }
     delay(1);
   }
 
+  // Parse HTTP status code
   String statusLine = client.readStringUntil('\n');
   int sp1 = statusLine.indexOf(' ');
   int sp2 = statusLine.indexOf(' ', sp1 + 1);
   statusCode = (sp1 >= 0 && sp2 > sp1) ? statusLine.substring(sp1 + 1, sp2).toInt() : -4;
 
-  bool chunked = false;
+  // Parse Content-Length from response headers
   int contentLength = -1;
   while (client.connected()) {
     String line = client.readStringUntil('\n');
+    if (line == "\r" || line.length() <= 1) break;
     String lower = line;
     lower.toLowerCase();
-    if (lower.startsWith("transfer-encoding:") && lower.indexOf("chunked") >= 0) chunked = true;
     if (lower.startsWith("content-length:")) {
       int colon = line.indexOf(':');
       if (colon >= 0) contentLength = line.substring(colon + 1).toInt();
     }
-    if (line == "\r" || line.length() == 0) break;
   }
 
+  // Read response body
   responseBody = "";
   responseBody.reserve(4096);
-
-  if (chunked) {
-    while (true) {
-      String lenLine = client.readStringUntil('\n');
-      lenLine.trim();
-      int semi = lenLine.indexOf(';');
-      if (semi >= 0) lenLine = lenLine.substring(0, semi);
-      int chunkLen = (int)strtol(lenLine.c_str(), NULL, 16);
-      if (chunkLen <= 0) { client.readStringUntil('\n'); break; }
-
-      int remaining = chunkLen;
-      while (remaining > 0) {
-        start = millis();
-        while (!client.available()) {
-          if (millis() - start > HTTP_TIMEOUT_MS) { client.stop(); return false; }
-          delay(1);
-        }
-        char buf[128];
-        int toRead = remaining > (int)sizeof(buf) ? (int)sizeof(buf) : remaining;
-        int n = client.readBytes(buf, toRead);
-        responseBody.concat(buf, n);
-        if (responseBody.length() > 4096) break;
-        remaining -= n;
-      }
-      client.readStringUntil('\n');
-    }
-  } else if (contentLength >= 0) {
+  if (contentLength >= 0) {
     int remaining = contentLength;
-    while (remaining > 0) {
+    while (remaining > 0 && client.connected()) {
       start = millis();
-      while (!client.available()) {
-        if (millis() - start > HTTP_TIMEOUT_MS) { client.stop(); return false; }
+      while (!client.available() && client.connected()) {
+        if (millis() - start > 10000) { client.stop(); return false; }
         delay(1);
       }
-      char buf[128];
+      char buf[256];
       int toRead = remaining > (int)sizeof(buf) ? (int)sizeof(buf) : remaining;
       int n = client.readBytes(buf, toRead);
+      if (n <= 0) break;
       responseBody.concat(buf, n);
       if (responseBody.length() > 4096) break;
       remaining -= n;
     }
   } else {
-    start = millis();
+    // Fallback: read until connection closes
     while (client.connected() || client.available()) {
-      while (client.available()) { if (responseBody.length() > 4096) break; responseBody += (char)client.read(); start = millis(); }
-      if (millis() - start > HTTP_TIMEOUT_MS) break;
+      while (client.available()) {
+        if (responseBody.length() > 4096) break;
+        responseBody += (char)client.read();
+      }
       delay(1);
     }
   }
@@ -604,6 +579,7 @@ bool captureAndClassify() {
   String itemEn  = classifyDoc["result"]["item_label"] | "?";
   float  conf    = classifyDoc["result"]["confidence"] | 0.0f;
   String modelUs = classifyDoc["result"]["model_used"] | "?";
+  int    inferMs = classifyDoc["inference_time_ms"] | 0;
 
   cls();
   int pct = (int)(conf * 100);
@@ -617,46 +593,49 @@ bool captureAndClassify() {
   const char* s = itemEn.c_str();
   int l = strlen(s);
   if (l <= 10) {
-    txt(0, 28, 2, C_WHITE, s);
+    txt(0, 22, 2, C_WHITE, s);
   } else {
     String l1 = itemEn.substring(0, 14);
     String l2 = itemEn.substring(14);
-    txt(0, 22, 1, C_WHITE, l1.c_str());
-    txt(0, 34, 1, C_WHITE, l2.c_str());
+    txt(0, 18, 1, C_WHITE, l1.c_str());
+    txt(0, 30, 1, C_WHITE, l2.c_str());
   }
 
-  tft.drawFastHLine(0, 55, 128, C_DARKGREY);
+  tft.drawFastHLine(0, 46, 128, C_DARKGREY);
 
-  num(0, 60, 3, cc, pct);
-  txt(40, 62, 2, cc, "%");
+  num(0, 50, 3, cc, pct);
+  txt(40, 52, 2, cc, "%");
 
   int barW = map(pct, 0, 100, 0, 118);
-  tft.drawRect(0, 95, 120, 10, C_WHITE);
-  tft.fillRect(1, 96, barW, 8, cc);
+  tft.drawRect(0, 80, 120, 10, C_WHITE);
+  tft.fillRect(1, 81, barW, 8, cc);
 
   if (pct >= 80)
-    txt(0, 112, 1, C_GREEN, "HIGH confidence");
+    txt(0, 96, 1, C_GREEN, "HIGH");
   else if (pct >= 50)
-    txt(0, 112, 1, C_YELLOW, "MED confidence");
+    txt(0, 96, 1, C_YELLOW, "MED");
   else
-    txt(0, 112, 1, C_RED, "LOW confidence");
+    txt(0, 96, 1, C_RED, "LOW");
 
   int convMs  = (int)(t1 - t0);
-  int uploadMs = (int)(t2 - t1);
   int totalMs  = (int)(t2 - t0);
+  // Network time = total round-trip minus server inference time
+  int netMs = totalMs - convMs - inferMs;
+  if (netMs < 0) netMs = 0;
 
-  char buf[24];
-  snprintf(buf, sizeof(buf), "Cv %d.%d U %d.%d",
+  char buf[30];
+  snprintf(buf, sizeof(buf), "Cv%d.%d N%d.%d I%d.%d",
            convMs / 1000, (convMs % 1000) / 100,
-           uploadMs / 1000, (uploadMs % 1000) / 100);
-  txt(0, 122, 1, C_DARKGREY, buf);
+           netMs / 1000, (netMs % 1000) / 100,
+           inferMs / 1000, (inferMs % 1000) / 100);
+  txt(0, 110, 1, C_DARKGREY, buf);
 
-  snprintf(buf, sizeof(buf), "T %d.%ds %s",
+  snprintf(buf, sizeof(buf), "T%d.%ds %s",
            totalMs / 1000, (totalMs % 1000) / 100,
            triggerMode == "button" ? "BTN" : "TOF");
-  txt(0, 134, 1, C_DARKGREY, buf);
+  txt(0, 122, 1, C_DARKGREY, buf);
 
-  txt(0, 148, 1, C_DARKGREY, modelUs.c_str());
+  txt(0, 136, 1, C_DARKGREY, modelUs.c_str());
 
   free(jpgBuf);
   return true;
@@ -839,10 +818,6 @@ void setup() {
   fetchTriggerConfig();
   lastConfigFetch = millis() + 15000;  // 将 30s 定时器错开 15s
 
-  // Hardware watchdog: 30s timeout, panic on expiry
-  esp_task_wdt_init(30, true);
-  esp_task_wdt_add(NULL);
-
   delay(1500);
   firstBoot = false;
   drawReadyAll();
@@ -852,7 +827,6 @@ void setup() {
 // loop — 按钮触发 / TOF 距离触发
 // ==============================
 void loop() {
-  esp_task_wdt_reset();
   unsigned long now = millis();
 
   // WiFi 断线重连
