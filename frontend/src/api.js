@@ -5,17 +5,25 @@ async function request(path, options = {}) {
   const url = `${API_BASE}${path}`
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
-  const res = await fetch(url, { ...fetchOptions, signal: controller.signal }).finally(() => clearTimeout(timer))
-  if (!res.ok) {
-    const detail = await res.json().catch(() => ({}))
-    throw new Error(detail.detail || `Server returned ${res.status}`)
+  try {
+    const res = await fetch(url, { ...fetchOptions, signal: controller.signal }).finally(() => clearTimeout(timer))
+    if (!res.ok) {
+      const detail = await res.json().catch(() => ({}))
+      throw new Error(detail.detail || `Server returned ${res.status}`)
+    }
+    const data = await res.json()
+    const requestId = res.headers.get('x-request-id')
+    if (requestId && data && typeof data === 'object') {
+      data._request_id = requestId
+    }
+    return data
+  } catch (err) {
+    clearTimeout(timer)
+    if (err.name === 'AbortError') {
+      throw new Error('请求超时，请检查网络连接或后端服务状态')
+    }
+    throw err
   }
-  const data = await res.json()
-  const requestId = res.headers.get('x-request-id')
-  if (requestId && data && typeof data === 'object') {
-    data._request_id = requestId
-  }
-  return data
 }
 
 export function checkHealth() {
@@ -48,7 +56,11 @@ export function getActiveModel() {
 }
 
 export async function setActiveModel(model) {
-  return request(`/model/active?model=${model}`, { method: 'POST' })
+  return request('/model/active', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model })
+  })
 }
 
 export async function configureProvider(provider, apiKey, apiBase, model) {

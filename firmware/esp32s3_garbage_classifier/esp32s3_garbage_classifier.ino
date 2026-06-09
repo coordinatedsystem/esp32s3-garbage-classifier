@@ -17,6 +17,7 @@
 #include "wifi_config.h"
 #include "img_converters.h"   // fmt2jpg
 #include "esp_heap_caps.h"    // heap_caps_malloc (PSRAM)
+#include "esp_task_wdt.h"   // hardware watchdog
 
 // ==============================
 // 屏幕引脚 (软件SPI)
@@ -93,6 +94,7 @@ unsigned long presenceStart = 0;  // TOF 物体出现计时
 unsigned long lastTrigger = 0;    // 上次触发 ms (防重复触发)
 unsigned long lastConfigFetch = 0;
 unsigned long lastTofRefresh = 0; // 屏幕 TOF 刷新计时
+unsigned long lastWifiRefresh = 0; // 屏幕 WiFi RSSI 刷新计时
 bool    configChanged = false;    // 配置变更反馈标记
 unsigned long configMsgMs = 0;    // 配置消息显示计时
 unsigned long postCaptureUntil = 0;     // 结果页保持到期时间
@@ -101,6 +103,8 @@ bool waitingDistanceClear = false;      // 自动触发后等待目标移开
 unsigned long distanceClearDeadline = 0;
 bool lastBootPressed = false;
 unsigned long lastHeartbeatMs = 0;
+DynamicJsonDocument classifyDoc(2048);  // Actual max response ~1200 bytes observed
+bool firstBoot = true;
 
 // ==============================
 // 屏幕小工具
@@ -145,36 +149,43 @@ bool wifiConnect() {
 
   WiFi.mode(WIFI_STA);
 
-  bar("Scanning...");
-  txt(0, 22, 1, C_WHITE, "Scan...");
-  int n = WiFi.scanNetworks();
+  int infoY;
 
-  tft.fillRect(0, 22, 128, 10, C_BLACK);
-  txt(0, 22, 1, C_YELLOW, "Found");
-  num(40, 22, 1, C_YELLOW, n);
-  txt(55, 22, 1, C_YELLOW, "networks");
+  if (firstBoot) {
+    bar("Scanning...");
+    txt(0, 22, 1, C_WHITE, "Scan...");
+    int n = WiFi.scanNetworks();
 
-  int show = (n < 8) ? n : 8;
-  for (int i = 0; i < show; i++) {
-    String ssid = WiFi.SSID(i);
-    int rssi = WiFi.RSSI(i);
-    if (ssid.length() > 16) ssid = ssid.substring(0, 14) + "~";
-    uint16_t clr = (ssid == WIFI_SSID) ? C_GREEN : C_WHITE;
-    txt(0, 34 + i * 10, 1, clr, ssid.c_str());
-    num(100, 34 + i * 10, 1, C_DARKGREY, rssi);
+    tft.fillRect(0, 22, 128, 10, C_BLACK);
+    txt(0, 22, 1, C_YELLOW, "Found");
+    num(40, 22, 1, C_YELLOW, n);
+    txt(55, 22, 1, C_YELLOW, "networks");
+
+    int show = (n < 8) ? n : 8;
+    for (int i = 0; i < show; i++) {
+      String ssid = WiFi.SSID(i);
+      int rssi = WiFi.RSSI(i);
+      if (ssid.length() > 16) ssid = ssid.substring(0, 14) + "~";
+      uint16_t clr = (ssid == WIFI_SSID) ? C_GREEN : C_WHITE;
+      txt(0, 34 + i * 10, 1, clr, ssid.c_str());
+      num(100, 34 + i * 10, 1, C_DARKGREY, rssi);
+    }
+
+    bool found = false;
+    for (int i = 0; i < n; i++)
+      if (WiFi.SSID(i) == WIFI_SSID) { found = true; break; }
+
+    WiFi.scanDelete();
+
+    infoY = 34 + show * 10 + 4;
+    txt(0, infoY, 1, C_WHITE, "Target:");
+    txt(42, infoY, 1, found ? C_GREEN : C_RED, found ? "FOUND" : "NOT FOUND");
+    txt(0, infoY + 10, 1, C_WHITE, "SSID:");
+    txt(36, infoY + 10, 1, C_CYAN, WIFI_SSID);
+    infoY = infoY + 22;
+  } else {
+    infoY = 22;
   }
-
-  bool found = false;
-  for (int i = 0; i < n; i++)
-    if (WiFi.SSID(i) == WIFI_SSID) { found = true; break; }
-
-  WiFi.scanDelete();
-
-  int infoY = 34 + show * 10 + 4;
-  txt(0, infoY, 1, C_WHITE, "Target:");
-  txt(42, infoY, 1, found ? C_GREEN : C_RED, found ? "FOUND" : "NOT FOUND");
-  txt(0, infoY + 10, 1, C_WHITE, "SSID:");
-  txt(36, infoY + 10, 1, C_CYAN, WIFI_SSID);
 
   bar("Connecting...");
   txt(0, infoY + 22, 1, C_YELLOW, "Connecting...");
@@ -307,7 +318,7 @@ bool tofInit() {
 int readTOF() {
   VL53L0X_RangingMeasurementData_t m;
   tof.rangingTest(&m, false);
-  if (m.RangeStatus != 4) return m.RangeMilliMeter;
+  if (m.RangeStatus == 0) return m.RangeMilliMeter;
   return -1;
 }
 
@@ -328,6 +339,10 @@ void fetchTriggerConfig() {
     StaticJsonDocument<256> doc;
     if (!deserializeJson(doc, body)) {
       String m  = doc["mode"] | "button";
+      if (m != "button" && m != "distance") {
+        Serial.printf("[CFG] invalid mode '%s', defaulting to button\n", m.c_str());
+        m = "button";
+      }
       int    d1 = doc["distance_min"] | 30;
       int    d2 = doc["distance_max"] | 300;
       int    cd = doc["cooldown_ms"] | 2000;
@@ -336,18 +351,23 @@ void fetchTriggerConfig() {
       if (m != triggerMode || d1 != distanceMin || d2 != distanceMax || cd != cooldownMs || ti != triggerIntervalMs) {
         tft.fillRect(0, 140, 128, 20, C_BLACK);
         txt(2, 144, 1, C_YELLOW, "Updating...");
+        bool modeChanged = (m != triggerMode);
         triggerMode  = m;
         distanceMin  = d1;
         distanceMax  = d2;
         cooldownMs   = cd;
         triggerIntervalMs = ti;
+        if (modeChanged) {
+          presenceStart = 0;
+          waitingDistanceClear = false;
+        }
         configChanged = true;
         configMsgMs   = millis();
         tft.fillRect(0, 140, 128, 20, C_BLACK);
         txt(2, 144, 1, C_GREEN, "Config OK");
         Serial.printf("[CFG] trigger=%s range=%d-%dmm cooldown=%dms interval=%dms\n",
                       triggerMode.c_str(), distanceMin, distanceMax, cooldownMs, triggerIntervalMs);
-        drawReady();
+        drawReadyConfig();
       }
     }
   }
@@ -372,12 +392,13 @@ void sendHeartbeat() {
 }
 
 bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen, int& statusCode, String& responseBody) {
-  const String boundary = "----ESP32Boundary";
-  const String head = "--" + boundary + "\r\n"
-                      "Content-Disposition: form-data; name=\"file\"; filename=\"cap.jpg\"\r\n"
-                      "Content-Type: image/jpeg\r\n\r\n";
-  const String foot = "\r\n--" + boundary + "--\r\n";
-  const size_t contentLen = head.length() + jpgLen + foot.length();
+  static const char boundary[] = "----ESP32Boundary";
+  static const char head[] =
+      "------ESP32Boundary\r\n"
+      "Content-Disposition: form-data; name=\"file\"; filename=\"cap.jpg\"\r\n"
+      "Content-Type: image/jpeg\r\n\r\n";
+  static const char foot[] = "\r\n------ESP32Boundary--\r\n";
+  const size_t contentLen = strlen(head) + jpgLen + strlen(foot);
 
   // TCP connect 重试，解决瞬时 socket 耗尽问题
   WiFiClient client;
@@ -388,12 +409,13 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
     if (retry == 2) { statusCode = -1; return false; }
   }
 
-  String reqHead = "POST " + path + " HTTP/1.1\r\n";
-  reqHead += "Host: " + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "\r\n";
-  reqHead += "Content-Type: multipart/form-data; boundary=" + boundary + "\r\n";
-  reqHead += "Content-Length: " + String(contentLen) + "\r\n";
-  reqHead += "Connection: close\r\n\r\n";
-  client.print(reqHead);
+  client.setNoDelay(true);  // disable Nagle for lower latency on small POSTs
+
+  client.printf("POST %s HTTP/1.1\r\n", path.c_str());
+  client.printf("Host: %s:%d\r\n", SERVER_HOST, SERVER_PORT);
+  client.printf("Content-Type: multipart/form-data; boundary=%s\r\n", boundary);
+  client.printf("Content-Length: %u\r\n", (unsigned int)contentLen);
+  client.print("Connection: close\r\n\r\n");
   client.print(head);
 
   size_t sent = 0;
@@ -432,7 +454,7 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
   }
 
   responseBody = "";
-  responseBody.reserve(512);
+  responseBody.reserve(4096);
 
   if (chunked) {
     while (true) {
@@ -453,7 +475,8 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
         char buf[128];
         int toRead = remaining > (int)sizeof(buf) ? (int)sizeof(buf) : remaining;
         int n = client.readBytes(buf, toRead);
-        for (int i = 0; i < n; i++) responseBody += buf[i];
+        responseBody.concat(buf, n);
+        if (responseBody.length() > 4096) break;
         remaining -= n;
       }
       client.readStringUntil('\n');
@@ -469,13 +492,14 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
       char buf[128];
       int toRead = remaining > (int)sizeof(buf) ? (int)sizeof(buf) : remaining;
       int n = client.readBytes(buf, toRead);
-      for (int i = 0; i < n; i++) responseBody += buf[i];
+      responseBody.concat(buf, n);
+      if (responseBody.length() > 4096) break;
       remaining -= n;
     }
   } else {
     start = millis();
     while (client.connected() || client.available()) {
-      while (client.available()) { responseBody += (char)client.read(); start = millis(); }
+      while (client.available()) { if (responseBody.length() > 4096) break; responseBody += (char)client.read(); start = millis(); }
       if (millis() - start > HTTP_TIMEOUT_MS) break;
       delay(1);
     }
@@ -511,7 +535,7 @@ bool captureAndClassify() {
   size_t   jpgLen = 0;
 
   bool ok = fmt2jpg(fb->buf, fb->len, fb->width, fb->height,
-                    PIXFORMAT_YUV422, 60, &jpgBuf, &jpgLen);
+                    PIXFORMAT_YUV422, 40, &jpgBuf, &jpgLen);
   esp_camera_fb_return(fb);
 
   if (!ok || !jpgBuf) {
@@ -530,7 +554,10 @@ bool captureAndClassify() {
   bar("Classifying...");
 
   String hostStr = String(SERVER_HOST) + ":" + String(SERVER_PORT);
-  String path = "/classify?source=esp32&ip=" + WiFi.localIP().toString() + "&trigger_mode=" + triggerMode;
+  char pathBuf[256];
+  snprintf(pathBuf, sizeof(pathBuf), "/classify?source=esp32&ip=%s&trigger_mode=%s",
+           WiFi.localIP().toString().c_str(), triggerMode.c_str());
+  String path = String(pathBuf);
   int code = 0;
   String body;
   bool posted = postMultipartJpeg(path, jpgBuf, jpgLen, code, body);
@@ -559,8 +586,8 @@ bool captureAndClassify() {
     body = body.substring(jsonStart, jsonEnd + 1);
   }
 
-  DynamicJsonDocument doc(4096);
-  DeserializationError jerr = deserializeJson(doc, body);
+  classifyDoc.clear();
+  DeserializationError jerr = deserializeJson(classifyDoc, body);
   if (body.length() == 0 || jerr) {
     Serial.printf("[JSON] parse failed: %s, code=%d, len=%d\n", jerr.c_str(), code, body.length());
     if (body.length() > 0) {
@@ -574,9 +601,9 @@ bool captureAndClassify() {
     return false;
   }
 
-  String itemEn  = doc["result"]["item_label"] | "?";
-  float  conf    = doc["result"]["confidence"] | 0.0f;
-  String modelUs = doc["result"]["model_used"] | "?";
+  String itemEn  = classifyDoc["result"]["item_label"] | "?";
+  float  conf    = classifyDoc["result"]["confidence"] | 0.0f;
+  String modelUs = classifyDoc["result"]["model_used"] | "?";
 
   cls();
   int pct = (int)(conf * 100);
@@ -646,7 +673,73 @@ void drawBoot() {
   tft.drawFastHLine(0, 80, 128, C_DARKGREY);
 }
 
-void drawReady() {
+// ---- Incremental screen draw helpers ----
+
+void drawReadyTOF() {
+  // Only redraw the TOF reading display area
+  int dist = readTOF();
+  tft.fillRect(0, 82, 128, 30, C_BLACK);
+  txt(0, 82, 1, C_DARKGREY, "TOF:");
+  if (dist >= 0) {
+    num(28, 82, 1, C_GREEN, dist);
+    txt(52, 82, 1, C_DARKGREY, "mm");
+    if (dist >= distanceMin && dist <= distanceMax) {
+      txt(0, 96, 1, C_GREEN, "IN RANGE");
+    } else {
+      txt(0, 96, 1, C_DARKGREY, "waiting...");
+    }
+  } else {
+    txt(28, 82, 1, C_RED, "---");
+    txt(0, 96, 1, C_DARKGREY, "no target");
+  }
+}
+
+void drawReadyWiFi() {
+  // Only redraw the WiFi RSSI line
+  int rssi = WiFi.RSSI();
+  tft.fillRect(0, 116, 128, 12, C_BLACK);
+  tft.setCursor(0, 116);
+  tft.setTextSize(1);
+  tft.setTextColor(rssi > -60 ? C_GREEN : rssi > -75 ? C_YELLOW : C_RED);
+  tft.print("WiFi ");
+  tft.print(rssi);
+  tft.print("dBm");
+}
+
+void drawReadyConfig() {
+  // Redraw only the config parameters area and trigger mode label
+  if (triggerMode == "distance") {
+    tft.fillRect(0, 20, 128, 60, C_BLACK);
+    txt(0, 20, 1, C_CYAN, "Auto (TOF)");
+    txt(0, 34, 1, C_DARKGREY, "Range:");
+    num(42, 34, 1, C_WHITE, distanceMin);
+    txt(0, 46, 1, C_DARKGREY, "  -");
+    num(20, 46, 1, C_WHITE, distanceMax);
+    txt(46, 46, 1, C_DARKGREY, "mm");
+    txt(0, 58, 1, C_DARKGREY, "Buf:");
+    num(26, 58, 1, C_WHITE, cooldownMs);
+    txt(54, 58, 1, C_DARKGREY, "ms");
+    txt(0, 68, 1, C_DARKGREY, "Int:");
+    num(26, 68, 1, C_WHITE, triggerIntervalMs / 1000);
+    txt(38, 68, 1, C_DARKGREY, "s");
+  } else {
+    tft.fillRect(0, 28, 128, 72, C_BLACK);
+    txt(0, 28, 1, C_WHITE, "Place item in");
+    txt(0, 40, 1, C_WHITE, "front of camera");
+    txt(0, 62, 2, C_CYAN, "Press BOOT");
+    txt(0, 88, 1, C_YELLOW, "to classify");
+  }
+
+  // Trigger mode label
+  tft.fillRect(0, 130, 128, 10, C_BLACK);
+  tft.setCursor(0, 130);
+  tft.setTextSize(1);
+  tft.setTextColor(C_DARKGREY);
+  tft.print(triggerMode == "distance" ? "Trig:Auto" : "Trig:Btn");
+}
+
+void drawReadyAll() {
+  // Full redraw — keep original drawReady logic
   cls();
   txt(0, 0, 2, C_WHITE, "Ready");
 
@@ -685,7 +778,7 @@ void drawReady() {
     txt(0, 88, 1, C_YELLOW, "to classify");
   }
 
-  // WiFi 状态
+  // WiFi status
   int rssi = WiFi.RSSI();
   tft.setCursor(0, 116);
   tft.setTextSize(1);
@@ -694,7 +787,7 @@ void drawReady() {
   tft.print(rssi);
   tft.print("dBm");
 
-  // 触发模式标签
+  // Trigger mode label
   tft.setCursor(0, 130);
   tft.setTextSize(1);
   tft.setTextColor(C_DARKGREY);
@@ -746,14 +839,20 @@ void setup() {
   fetchTriggerConfig();
   lastConfigFetch = millis() + 15000;  // 将 30s 定时器错开 15s
 
+  // Hardware watchdog: 30s timeout, panic on expiry
+  esp_task_wdt_init(30, true);
+  esp_task_wdt_add(NULL);
+
   delay(1500);
-  drawReady();
+  firstBoot = false;
+  drawReadyAll();
 }
 
 // ==============================
 // loop — 按钮触发 / TOF 距离触发
 // ==============================
 void loop() {
+  esp_task_wdt_reset();
   unsigned long now = millis();
 
   // WiFi 断线重连
@@ -764,7 +863,7 @@ void loop() {
     wifiConnect();
     fetchTriggerConfig();
     lastConfigFetch = millis();
-    drawReady();
+    drawReadyAll();
     return;
   }
 
@@ -781,7 +880,7 @@ void loop() {
   // 清除配置变更消息
   if (configChanged && now - configMsgMs > 2000) {
     configChanged = false;
-    drawReady();
+    drawReadyConfig();
   }
 
   if (postCaptureUntil > now) {
@@ -799,7 +898,7 @@ void loop() {
     return;
   } else if (lastCountdownSec != -1) {
     lastCountdownSec = -1;
-    drawReady();
+    drawReadyAll();
   }
 
   if (triggerMode == "button") {
@@ -812,40 +911,33 @@ void loop() {
         postCaptureUntil = millis() + 5000;
         lastCountdownSec = -1;
         waitingDistanceClear = false;
+        presenceStart = 0;
         fetchTriggerConfig();
         lastHeartbeatMs = millis();
         lastConfigFetch = millis();
       }
     }
     lastBootPressed = bootPressed;
-  } else {
+  } else if (triggerMode == "distance") {
     // === 距离触发 ===
     int dist = readTOF();
 
     // 每 500ms 刷新屏幕 TOF 读数
     if (now - lastTofRefresh >= 500) {
       lastTofRefresh = now;
-      tft.fillRect(28, 82, 50, 10, C_BLACK);
-      if (dist >= 0) {
-        num(28, 82, 1, C_GREEN, dist);
-        if (dist >= distanceMin && dist <= distanceMax) {
-          tft.fillRect(0, 96, 128, 10, C_BLACK);
-          txt(0, 96, 1, C_GREEN, "IN RANGE");
-        } else {
-          tft.fillRect(0, 96, 128, 10, C_BLACK);
-          txt(0, 96, 1, C_DARKGREY, "waiting...");
-        }
-      } else {
-        txt(28, 82, 1, C_RED, "---");
-        tft.fillRect(0, 96, 128, 10, C_BLACK);
-        txt(0, 96, 1, C_DARKGREY, "no target");
-      }
+      drawReadyTOF();
+    }
+
+    // 每 5s 刷新 WiFi RSSI
+    if (now - lastWifiRefresh >= 5000) {
+      lastWifiRefresh = now;
+      drawReadyWiFi();
     }
 
     if (waitingDistanceClear) {
       if (dist < distanceMin || dist > distanceMax || now > distanceClearDeadline) {
         waitingDistanceClear = false;
-        drawReady();
+        drawReadyAll();
       }
       delay(10);
       return;
@@ -887,6 +979,23 @@ void loop() {
       }
       presenceStart = 0;
     }
+  } else {
+    // Unknown triggerMode, fallback to button behavior
+    bool bootPressed = (digitalRead(PIN_BOOT) == LOW);
+    if (bootPressed && !lastBootPressed) {
+      delay(30);
+      if (digitalRead(PIN_BOOT) == LOW) {
+        captureAndClassify();
+        postCaptureUntil = millis() + 5000;
+        lastCountdownSec = -1;
+        waitingDistanceClear = false;
+        presenceStart = 0;
+        fetchTriggerConfig();
+        lastHeartbeatMs = millis();
+        lastConfigFetch = millis();
+      }
+    }
+    lastBootPressed = bootPressed;
   }
   delay(30);
 }

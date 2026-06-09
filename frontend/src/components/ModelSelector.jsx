@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { memo, useState, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { Scan, ImageSquare, Flask, Gear, Brain, Cloud, Info, WifiHigh, Browser, Check, X } from '@phosphor-icons/react'
 import { getModels, getActiveModel, setActiveModel, configureProvider } from '../api'
@@ -33,7 +33,7 @@ const modeMeta = {
 
 const allModes = ['clip', 'doubao', 'qwen', 'custom', 'detect']
 
-export default function ModelSelector({ mode, setMode, disabled }) {
+const ModelSelector = memo(function ModelSelector({ mode, setMode, disabled, visible }) {
   const [models, setModels] = useState(null)
   const [pendingModel, setPendingModel] = useState(null)  // 选中但未确认的模型
   const [showConfig, setShowConfig] = useState(null)
@@ -42,6 +42,7 @@ export default function ModelSelector({ mode, setMode, disabled }) {
   const [confirming, setConfirming] = useState(false)
 
   useEffect(() => {
+    if (!visible) return
     Promise.all([getModels(), getActiveModel()])
       .then(([modelData, activeData]) => {
         setModels(modelData.models)
@@ -50,7 +51,7 @@ export default function ModelSelector({ mode, setMode, disabled }) {
         }
       })
       .catch(() => {})
-  }, [])
+  }, [visible])
 
   // 点击 tab → 设为待确认
   const handleTabClick = (m) => {
@@ -344,4 +345,6 @@ export default function ModelSelector({ mode, setMode, disabled }) {
       </motion.div>
     </div>
   )
-}
+})
+
+export default ModelSelector

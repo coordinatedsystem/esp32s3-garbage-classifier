@@ -1,9 +1,9 @@
-import { useState, useRef, useCallback, useEffect } from 'react'
+import { memo, useState, useRef, useCallback, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { X, Plus, UploadSimple } from '@phosphor-icons/react'
 import { classifyImage, detectImage } from '../api'
 
-export default function UploadPanel({ mode, isLoading, setIsLoading, setError, onResult, onClear }) {
+const UploadPanel = memo(function UploadPanel({ mode, isLoading, setIsLoading, setError, onResult, onClear }) {
   const [preview, setPreview] = useState(null)
   const [dragOver, setDragOver] = useState(false)
   const fileRef = useRef(null)
@@ -161,4 +161,6 @@ export default function UploadPanel({ mode, isLoading, setIsLoading, setError, o
       </p>
     </div>
   )
-}
+})
+
+export default UploadPanel

@@ -1,9 +1,9 @@
-import { useState, useEffect, useRef } from 'react'
+import { memo, useState, useEffect, useRef } from 'react'
 import { motion } from 'framer-motion'
 import { Cpu, Camera, ClockCounterClockwise, WifiHigh, Info, ImageSquare, Lightning, HandPointing, Ruler, Timer, Check } from '@phosphor-icons/react'
 import { getHardwareImageUrl, getTriggerConfig, setTriggerConfig } from '../api'
 
-export default function HardwarePanel({ status, loading }) {
+const HardwarePanel = memo(function HardwarePanel({ status, loading, captureEventKey, visible }) {
   const [imgKey, setImgKey] = useState(0)
   const prevCaptureCount = useRef(null)
   const [imgError, setImgError] = useState(false)
@@ -18,6 +18,7 @@ export default function HardwarePanel({ status, loading }) {
   const [trigMsg, setTrigMsg] = useState('')
 
   useEffect(() => {
+    if (!visible) return
     getTriggerConfig().then(cfg => {
       setTrigMode(cfg.mode || 'button')
       setTrigMin(cfg.distance_min ?? 30)
@@ -25,7 +26,7 @@ export default function HardwarePanel({ status, loading }) {
       setTrigCooldown(cfg.cooldown_ms ?? 2000)
       setTrigInterval(cfg.trigger_interval_ms ?? 10000)
     }).catch(() => {})
-  }, [])
+  }, [visible])
 
   const msgTimers = useRef([])
 
@@ -57,15 +58,13 @@ export default function HardwarePanel({ status, loading }) {
     }
   }
 
-  // SSE — 实时接收服务器推送的新采集事件，立即刷新图像
+  // 通过父组件 SSE 推送的 captureEventKey 驱动图像刷新
   useEffect(() => {
-    const es = new EventSource('/events')
-    es.addEventListener('new_capture', () => {
+    if (captureEventKey > 0) {
       setImgKey(k => k + 1)
       setImgError(false)
-    })
-    return () => es.close()
-  }, [])
+    }
+  }, [captureEventKey])
 
   useEffect(() => {
     if (status && status.capture_count !== undefined) {
@@ -348,4 +347,6 @@ export default function HardwarePanel({ status, loading }) {
       </div>
     </motion.div>
   )
-}
+})
+
+export default HardwarePanel

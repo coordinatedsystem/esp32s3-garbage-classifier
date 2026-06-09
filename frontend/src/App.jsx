@@ -32,22 +32,27 @@ export default function App() {
   const [error, setError] = useState(null)
   const [historyKey, setHistoryKey] = useState(0)
   const [activeTab, setActiveTab] = useState('hardware')
+  const [captureEventKey, setCaptureEventKey] = useState(0)
 
   const fetchHealth = useCallback(() => checkHealth(), [])
   const { data: health, loading: healthLoading } = usePolling(fetchHealth, { interval: 5000 })
   const fetchMetrics = useCallback(() => getRuntimeMetrics(), [])
   const { data: metrics } = usePolling(fetchMetrics, { interval: 10000 })
   const fetchHwStatus = useCallback(() => getHardwareStatus(), [])
-  const { data: hwStatus, loading: hwLoading, setData: setHwStatus } = usePolling(fetchHwStatus, { interval: 3000 })
+  const { data: hwStatus, loading: hwLoading, setData: setHwStatus } = usePolling(fetchHwStatus, { interval: 30000 })
 
-  // SSE 实时监听硬件状态变化
+  // SSE 实时监听硬件状态变化与新采集事件（单连接双事件）
+  // 后端推送完整 hardware_state，直接替换；30s 轮询仅作降级备份
   useEffect(() => {
     const es = new EventSource('/events')
     es.addEventListener('hw_status', (e) => {
       try {
-        const { online } = JSON.parse(e.data)
-        setHwStatus(prev => prev ? { ...prev, online } : { online })
+        const data = JSON.parse(e.data)
+        setHwStatus(data)
       } catch {}
+    })
+    es.addEventListener('new_capture', () => {
+      setCaptureEventKey(k => k + 1)
     })
     return () => es.close()
   }, [setHwStatus])
@@ -216,11 +221,11 @@ export default function App() {
             <div className="max-w-[960px] mx-auto space-y-6">
               {/* 选项卡内容 — 全部保持挂载，仅隐藏非活跃面板 */}
               <div className={activeTab === 'hardware' ? '' : 'hidden'}>
-                <HardwarePanel status={hwStatus} loading={hwLoading} />
+                <HardwarePanel status={hwStatus} loading={hwLoading} captureEventKey={captureEventKey} visible={activeTab === 'hardware'} />
               </div>
 
               <div className={activeTab === 'model' ? '' : 'hidden'}>
-                <ModelSelector mode={mode} setMode={setMode} disabled={isLoading} />
+                <ModelSelector mode={mode} setMode={setMode} disabled={isLoading} visible={activeTab === 'model'} />
               </div>
 
               <div className={activeTab === 'upload' ? '' : 'hidden'}>
@@ -232,6 +237,7 @@ export default function App() {
                     setError={setError}
                     onResult={handleResult}
                     onClear={handleClear}
+                    visible={activeTab === 'upload'}
                   />
 
                   <AnimatePresence mode="wait">
@@ -246,10 +252,8 @@ export default function App() {
                 </div>
               </div>
 
-              {/* 历史记录 — 仅在硬件和上传标签时显示 */}
-              {(activeTab === 'hardware' || activeTab === 'upload') && (
-                <HistoryList categoryConfig={CATEGORY_CONFIG} refreshKey={historyKey} />
-              )}
+              {/* 历史记录 — 始终挂载，通过 visible 控制数据拉取 */}
+              <HistoryList categoryConfig={CATEGORY_CONFIG} refreshKey={historyKey} visible={activeTab === 'hardware' || activeTab === 'upload'} />
             </div>
           </div>
         </main>

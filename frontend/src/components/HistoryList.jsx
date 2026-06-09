@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react'
+import { memo, useState, useEffect, useCallback } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
 import { ClockCounterClockwise, CaretDown, CaretUp, ImageSquare, Trash } from '@phosphor-icons/react'
 import { getHistory, clearHistory, deleteHistoryItem } from '../api'
@@ -10,29 +10,32 @@ const FILTER_OPTIONS = [
   { key: 'hardware', label: '硬件' }
 ]
 
-export default function HistoryList({ categoryConfig, refreshKey }) {
+const HistoryList = memo(function HistoryList({ categoryConfig, refreshKey, visible }) {
   const [items, setItems] = useState([])
   const [total, setTotal] = useState(0)
   const [expanded, setExpanded] = useState(false)
   const [filter, setFilter] = useState('all')
   const [loading, setLoading] = useState(true)
+  const [error, setError] = useState(null)
 
   const fetchHistory = useCallback(async () => {
     try {
       setLoading(true)
+      setError(null)
       const data = await getHistory(1, 100)
       setItems(data.items || [])
       setTotal(data.total || 0)
-    } catch {
-      // silent
+    } catch (err) {
+      setError(err.message || '加载失败')
     } finally {
       setLoading(false)
     }
   }, [])
 
   useEffect(() => {
+    if (!visible) return
     fetchHistory()
-  }, [fetchHistory, refreshKey])
+  }, [fetchHistory, refreshKey, visible])
 
   const handleClear = async () => {
     try {
@@ -53,7 +56,7 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
   }
 
   const filtered = filter === 'all' ? items : items.filter(i => i.mode === filter)
-  const visible = expanded ? filtered : filtered.slice(0, 6)
+  const visibleItems = expanded ? filtered : filtered.slice(0, 6)
 
   return (
     <div>
@@ -117,6 +120,22 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
             </div>
           ))}
         </div>
+      ) : error && items.length === 0 ? (
+        <div className="flex flex-col items-center justify-center py-16 gap-4 text-center">
+          <div className="w-14 h-14 rounded-2xl bg-red-50 flex items-center justify-center">
+            <ClockCounterClockwise weight="bold" className="w-7 h-7 text-red-400" />
+          </div>
+          <div>
+            <p className="text-sm font-semibold text-zinc-800">加载失败</p>
+            <p className="text-xs text-zinc-400 mt-1 max-w-[40ch]">{error}</p>
+          </div>
+          <button
+            onClick={fetchHistory}
+            className="mt-1 px-5 py-2.5 rounded-lg bg-zinc-900 text-white text-sm font-semibold transition-colors active:scale-[0.98] hover:bg-zinc-800"
+          >
+            重试
+          </button>
+        </div>
       ) : filtered.length === 0 ? (
         <div className="flex flex-col items-center justify-center py-16 gap-3 text-center">
           <div className="w-14 h-14 rounded-2xl bg-zinc-100 flex items-center justify-center">
@@ -130,7 +149,7 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
       ) : (
         <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
           <AnimatePresence>
-            {visible.map((entry, i) => {
+            {visibleItems.map((entry, i) => {
               const isClassify = entry.mode === 'classify'
               const isHardware = entry.mode === 'hardware'
               const itemZh = isClassify
@@ -200,4 +219,6 @@ export default function HistoryList({ categoryConfig, refreshKey }) {
       )}
     </div>
   )
-}
+})
+
+export default HistoryList
