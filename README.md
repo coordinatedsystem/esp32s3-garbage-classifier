@@ -205,6 +205,14 @@ const int   SERVER_PORT   = 8085;
 
 ## 变更日志
 
+### v5.2.0
+- **画质同步修复**：`POST /quality/config` 不再独立于 `trigger_config`，画质修改后同步写入 `trigger_config.jpeg_quality`，ESP32 轮询触发配置即可读到新画质
+- **Query 参数重命名**：`/classify?model=` → `model_name`，消除对全局 `model`（CLIP 实例）的变量名遮蔽
+- **线程安全加固**：`_hardware_was_online` 读写移入 `_hw_lock` 保护，消除 SSE 推送竞态条件
+- **固件 HTTP 错峰**：拍照后 `lastConfigFetch` 设为 `millis() + 2500`，避免与心跳请求同时发出
+- **固件响应体边界保护**：`postMultipartJpeg` 先检查长度再 `concat`，防止超大响应溢出 4KB 缓冲区
+- **冗余代码删除**：`_update_hardware_online` 中永不执行的 `elif pass` 分支清理
+
 ### v5.1.1
 - **HTTP 超时调整**：30s → 15s，更快释放锁死连接
 - **连接重试机制**：`WiFiClient` 连接失败自动重试 2 次（间隔 300ms），连接前清理 socket 残留状态

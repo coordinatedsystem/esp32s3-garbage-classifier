@@ -41,7 +41,7 @@ export function getModels() {
 export async function classifyImage(file, model = '') {
   const formData = new FormData()
   formData.append('file', file)
-  const qs = model ? `?model=${model}` : ''
+  const qs = model ? `?model_name=${model}` : ''
   return request(`/classify${qs}`, { method: 'POST', body: formData })
 }
 

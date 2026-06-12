@@ -256,8 +256,6 @@ def _update_hardware_online():
         last_seen = hardware_state["last_seen"]
         if was_online and last_seen and (now - last_seen > HARDWARE_STALE_SECONDS):
             hardware_state["online"] = False
-        elif not was_online and last_seen and (now - last_seen <= HARDWARE_STALE_SECONDS):
-            pass  # _mark_hardware_online 会设置 online=True
         is_online = hardware_state["online"]
         changed = (was_online != is_online) or (_hardware_was_online != is_online)
         _hardware_was_online = is_online
@@ -423,7 +421,7 @@ async def lifespan(app: FastAPI):
     _sse_queues.clear()
 
 
-app = FastAPI(title="物品识别API", version="5.0.0", lifespan=lifespan)
+app = FastAPI(title="物品识别API", version="5.2.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
@@ -629,7 +627,7 @@ async def classify_image(
     file: UploadFile = File(...),
     source: str = Query("web"),
     ip: str = Query(""),
-    model: str = Query(""),   # 可选：覆盖当前激活的分类模型
+    model_name: str = Query(""),   # 可选：覆盖当前激活的分类模型
     trigger_mode: str = Query(""),
     background_tasks: BackgroundTasks = None
 ):
@@ -640,7 +638,7 @@ async def classify_image(
             raise HTTPException(status_code=503, detail="Models still loading — please retry shortly")
         image_data = await file.read()
         with _active_model_lock:
-            classify_model = model if model else active_classify_model
+            classify_model = model_name if model_name else active_classify_model
         logger.info(f"[classify] source={source}, ip={ip}, model={classify_model}, image_size={len(image_data)}")
 
         # ESP32 硬件上线标记

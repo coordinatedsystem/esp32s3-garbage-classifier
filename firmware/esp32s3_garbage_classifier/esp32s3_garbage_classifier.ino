@@ -68,7 +68,7 @@ Adafruit_VL53L0X tof = Adafruit_VL53L0X();
 // 参数
 // ==============================
 #define HTTP_TIMEOUT_MS  15000
-#define FIRMWARE_VERSION "5.1.1"
+#define FIRMWARE_VERSION "5.2.0"
 
 // 颜色
 #define C_BLACK     ST7735_BLACK
