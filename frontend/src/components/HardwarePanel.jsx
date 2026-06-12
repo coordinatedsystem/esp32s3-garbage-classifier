@@ -1,32 +1,54 @@
 import { memo, useState, useEffect, useRef } from 'react'
-import { motion } from 'framer-motion'
-import { Cpu, Camera, ClockCounterClockwise, WifiHigh, Info, ImageSquare, Lightning, HandPointing, Ruler, Timer, Check } from '@phosphor-icons/react'
+import { motion, AnimatePresence } from 'framer-motion'
+import { Cpu, Camera, ClockCounterClockwise, WifiHigh, Info, ImageSquare, Lightning, HandPointing, Ruler, Check, CaretDown } from '@phosphor-icons/react'
 import { getHardwareImageUrl, getTriggerConfig, setTriggerConfig } from '../api'
+import CameraControls from './CameraControls'
 
-const HardwarePanel = memo(function HardwarePanel({ status, loading, captureEventKey, visible }) {
+const HardwarePanel = memo(function HardwarePanel({ status, loading, captureEventKey, visible, onConfigChange }) {
   const [imgKey, setImgKey] = useState(0)
   const prevCaptureCount = useRef(null)
   const [imgError, setImgError] = useState(false)
 
-  // 触发配置
+  // 触发配置 state
   const [trigMode, setTrigMode] = useState('button')
   const [trigMin, setTrigMin] = useState(30)
   const [trigMax, setTrigMax] = useState(300)
   const [trigCooldown, setTrigCooldown] = useState(2000)
   const [trigInterval, setTrigInterval] = useState(10000)
+  const [trigQuality, setTrigQuality] = useState(85)
   const [trigSaving, setTrigSaving] = useState(false)
   const [trigMsg, setTrigMsg] = useState('')
+  const [trigExpanded, setTrigExpanded] = useState(true)
+
+  const trigRef = useRef({})
 
   useEffect(() => {
     if (!visible) return
     getTriggerConfig().then(cfg => {
-      setTrigMode(cfg.mode || 'button')
-      setTrigMin(cfg.distance_min ?? 30)
-      setTrigMax(cfg.distance_max ?? 300)
-      setTrigCooldown(cfg.cooldown_ms ?? 2000)
-      setTrigInterval(cfg.trigger_interval_ms ?? 10000)
+      const snap = {
+        mode: cfg.mode || 'button',
+        distance_min: cfg.distance_min ?? 30,
+        distance_max: cfg.distance_max ?? 300,
+        cooldown_ms: cfg.cooldown_ms ?? 2000,
+        trigger_interval_ms: cfg.trigger_interval_ms ?? 10000,
+        jpeg_quality: cfg.jpeg_quality ?? 85,
+      }
+      trigRef.current = snap
+      setTrigMode(snap.mode)
+      setTrigMin(snap.distance_min)
+      setTrigMax(snap.distance_max)
+      setTrigCooldown(snap.cooldown_ms)
+      setTrigInterval(snap.trigger_interval_ms)
+      setTrigQuality(snap.jpeg_quality)
     }).catch(() => {})
   }, [visible])
+
+  const trigChanged = () => {
+    const r = trigRef.current
+    return trigMode !== r.mode || Number(trigMin) !== r.distance_min ||
+      Number(trigMax) !== r.distance_max || Number(trigCooldown) !== r.cooldown_ms ||
+      Number(trigInterval) !== r.trigger_interval_ms || Number(trigQuality) !== r.jpeg_quality
+  }
 
   const msgTimers = useRef([])
 
@@ -45,14 +67,38 @@ const HardwarePanel = memo(function HardwarePanel({ status, loading, captureEven
         distance_min: Number(trigMin),
         distance_max: Number(trigMax),
         cooldown_ms: Number(trigCooldown),
-        trigger_interval_ms: Number(trigInterval)
+        trigger_interval_ms: Number(trigInterval),
+        jpeg_quality: Number(trigQuality)
       })
-      setTrigMsg('配置已保存 · 设备同步中...')
-      msgTimers.current.push(setTimeout(() => setTrigMsg('配置已同步 · 调整成功'), 1200))
-      msgTimers.current.push(setTimeout(() => setTrigMsg(''), 4000))
+      trigRef.current = {
+        mode: trigMode, distance_min: Number(trigMin), distance_max: Number(trigMax),
+        cooldown_ms: Number(trigCooldown), trigger_interval_ms: Number(trigInterval),
+        jpeg_quality: Number(trigQuality)
+      }
+      setTrigMsg('已保存')
+      if (onConfigChange) onConfigChange()
+      msgTimers.current.push(setTimeout(() => setTrigMsg(''), 3000))
     } catch (e) {
       setTrigMsg('错误: ' + e.message)
       msgTimers.current.push(setTimeout(() => setTrigMsg(''), 3000))
+      try {
+        const cfg = await getTriggerConfig()
+        const snap = {
+          mode: cfg.mode || 'button',
+          distance_min: cfg.distance_min ?? 30,
+          distance_max: cfg.distance_max ?? 300,
+          cooldown_ms: cfg.cooldown_ms ?? 2000,
+          trigger_interval_ms: cfg.trigger_interval_ms ?? 10000,
+          jpeg_quality: cfg.jpeg_quality ?? 85,
+        }
+        trigRef.current = snap
+        setTrigMode(snap.mode)
+        setTrigMin(snap.distance_min)
+        setTrigMax(snap.distance_max)
+        setTrigCooldown(snap.cooldown_ms)
+        setTrigInterval(snap.trigger_interval_ms)
+        setTrigQuality(snap.jpeg_quality)
+      } catch (_) {}
     } finally {
       setTrigSaving(false)
     }
@@ -165,146 +211,75 @@ const HardwarePanel = memo(function HardwarePanel({ status, loading, captureEven
         </div>
       </div>
 
-      {/* ====== 触发配置 ====== */}
-      <div className="mb-5 rounded-2xl bg-zinc-50 border border-zinc-200 p-5">
-        <div className="flex items-center gap-2 mb-4">
-          <HandPointing weight="bold" className="w-5 h-5 text-amber-500" />
-          <span className="text-base font-bold text-zinc-800">触发方式</span>
-        </div>
+      {/* ====== Trigger config — collapsible ====== */}
+      <div className="mb-5 rounded-2xl bg-zinc-50 border border-zinc-200">
+        <button onClick={() => setTrigExpanded(e => !e)}
+          className="w-full flex items-center justify-between p-5">
+          <div className="flex items-center gap-2">
+            <HandPointing weight="bold" className="w-5 h-5 text-amber-500" />
+            <span className="text-base font-bold text-zinc-800">触发方式</span>
+            {trigChanged() && (
+              <span className="w-1.5 h-1.5 rounded-full bg-amber-400" title="未保存更改" />
+            )}
+          </div>
+          <span className={`text-zinc-300 transition-transform ${trigExpanded ? '' : 'rotate-180'}`}>
+            <CaretDown weight="bold" className="w-3.5 h-3.5" />
+          </span>
+        </button>
 
-        {/* 模式切换 */}
-        <div className="flex rounded-xl bg-white border border-zinc-200 p-1 mb-4">
-          <button
-            onClick={() => setTrigMode('button')}
-            className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all ${
-              trigMode === 'button' ? 'bg-indigo-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700'
-            }`}
-          >
-            <HandPointing weight="bold" className="w-4 h-4" />
-            按键触发
-          </button>
-          <button
-            onClick={() => setTrigMode('distance')}
-            className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all ${
-              trigMode === 'distance' ? 'bg-indigo-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700'
-            }`}
-          >
-            <Ruler weight="bold" className="w-4 h-4" />
-            距离触发
-          </button>
-        </div>
+        <AnimatePresence>
+          {trigExpanded && (
+            <motion.div initial={{ opacity: 0, height: 0 }} animate={{ opacity: 1, height: 'auto' }} exit={{ opacity: 0, height: 0 }}
+              className="overflow-hidden px-5 pb-5 space-y-4">
 
-        {/* 距离模式参数 */}
-        {trigMode === 'distance' && (
-          <motion.div
-            initial={{ opacity: 0, height: 0 }}
-            animate={{ opacity: 1, height: 'auto' }}
-            className="space-y-4 overflow-hidden"
-          >
-            {/* 最小距离 */}
-            <div>
-              <label className="text-sm font-semibold text-zinc-600 mb-1.5 block">最小触发距离 (mm)</label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="range" min="0" max="1000" value={trigMin}
-                  onChange={e => { const v = Number(e.target.value); if (v < trigMax) setTrigMin(v) }}
-                  className="flex-1 h-2 rounded-full appearance-none bg-zinc-200 accent-indigo-500 cursor-pointer"
-                />
-                <input
-                  type="number" min="0" max="1000" value={trigMin}
-                  onChange={e => { const v = Number(e.target.value); if (v > 0 && v < trigMax) setTrigMin(v) }}
-                  className="w-20 px-3 py-1.5 rounded-lg border border-zinc-300 text-sm font-mono text-center focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-400"
-                />
+              <div className="flex rounded-xl bg-white border border-zinc-200 p-1">
+                <button onClick={() => setTrigMode('button')}
+                  className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all ${
+                    trigMode === 'button' ? 'bg-indigo-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`}>
+                  <HandPointing weight="bold" className="w-4 h-4" />
+                  按键
+                </button>
+                <button onClick={() => setTrigMode('distance')}
+                  className={`flex-1 flex items-center justify-center gap-2 py-2.5 rounded-lg text-sm font-semibold transition-all ${
+                    trigMode === 'distance' ? 'bg-indigo-600 text-white shadow-sm' : 'text-zinc-500 hover:text-zinc-700'}`}>
+                  <Ruler weight="bold" className="w-4 h-4" />
+                  距离
+                </button>
               </div>
-            </div>
 
-            {/* 最大距离 */}
-            <div>
-              <label className="text-sm font-semibold text-zinc-600 mb-1.5 block">最大触发距离 (mm)</label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="range" min="10" max="2000" value={trigMax}
-                  onChange={e => { const v = Number(e.target.value); if (v > trigMin) setTrigMax(v) }}
-                  className="flex-1 h-2 rounded-full appearance-none bg-zinc-200 accent-indigo-500 cursor-pointer"
-                />
-                <input
-                  type="number" min="10" max="2000" value={trigMax}
-                  onChange={e => { const v = Number(e.target.value); if (v < 2001 && v > trigMin) setTrigMax(v) }}
-                  className="w-20 px-3 py-1.5 rounded-lg border border-zinc-300 text-sm font-mono text-center focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-400"
-                />
+              {trigMode === 'distance' && (
+                <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="space-y-4">
+                  <SliderField label="最小距离 (mm)" value={trigMin} min={0} max={1000} step={5} maxValidation={trigMax}
+                    onChange={v => { if (v < trigMax) setTrigMin(v) }} />
+                  <SliderField label="最大距离 (mm)" value={trigMax} min={10} max={2000} step={5} minValidation={trigMin}
+                    onChange={v => { if (v > trigMin) setTrigMax(v) }} />
+                  <SliderField label="缓冲 (ms)" value={trigCooldown} min={0} max={5000} step={100}
+                    onChange={setTrigCooldown} />
+                  <SliderField label="间隔 (秒)" value={Math.round(trigInterval / 1000)} min={1} max={60} step={1}
+                    onChange={v => setTrigInterval(v * 1000)} />
+                </motion.div>
+              )}
+
+              <div className="flex items-center gap-3 pt-2">
+                <button onClick={handleTrigSave} disabled={trigSaving || !trigChanged()}
+                  className="flex items-center gap-1.5 px-4 py-2 rounded-lg bg-indigo-600 text-white text-xs font-semibold hover:bg-indigo-700 disabled:opacity-50 transition-all">
+                  <Check weight="bold" className="w-3.5 h-3.5" />
+                  {trigSaving ? '保存中...' : '保存'}
+                </button>
+                {trigMsg && (
+                  <span className={`text-xs font-medium px-2 py-1 rounded-lg ${
+                    trigMsg.startsWith('错误') ? 'bg-red-50 text-red-600' : 'bg-emerald-50 text-emerald-700'}`}>
+                    {trigMsg}
+                  </span>
+                )}
               </div>
-            </div>
-
-            {/* 缓冲时间 */}
-            <div>
-              <label className="text-sm font-semibold text-zinc-600 mb-1.5 block">
-                <Timer weight="bold" className="w-4 h-4 inline mr-1" />
-                触发缓冲时间 (ms)
-              </label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="range" min="0" max="5000" step="100" value={trigCooldown}
-                  onChange={e => setTrigCooldown(Number(e.target.value))}
-                  className="flex-1 h-2 rounded-full appearance-none bg-zinc-200 accent-indigo-500 cursor-pointer"
-                />
-                <input
-                  type="number" min="0" max="5000" step="100" value={trigCooldown}
-                  onChange={e => { const v = Number(e.target.value); if (v >= 0 && v <= 5000) setTrigCooldown(v) }}
-                  className="w-20 px-3 py-1.5 rounded-lg border border-zinc-300 text-sm font-mono text-center focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-400"
-                />
-              </div>
-            </div>
-
-            {/* 触发间隔 */}
-            <div>
-              <label className="text-sm font-semibold text-zinc-600 mb-1.5 block">
-                <Timer weight="bold" className="w-4 h-4 inline mr-1" />
-                最小触发间隔 (秒)
-              </label>
-              <div className="flex items-center gap-3">
-                <input
-                  type="range" min="1" max="60" value={Math.round(trigInterval / 1000)}
-                  onChange={e => setTrigInterval(Number(e.target.value) * 1000)}
-                  className="flex-1 h-2 rounded-full appearance-none bg-zinc-200 accent-indigo-500 cursor-pointer"
-                />
-                <input
-                  type="number" min="1" max="60" value={Math.round(trigInterval / 1000)}
-                  onChange={e => { const v = Number(e.target.value); if (v >= 1 && v <= 60) setTrigInterval(v * 1000) }}
-                  className="w-20 px-3 py-1.5 rounded-lg border border-zinc-300 text-sm font-mono text-center focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-400"
-                />
-              </div>
-            </div>
-
-            <p className="text-sm text-zinc-500">
-              物体在范围内稳定超过缓冲时间后自动触发拍照
-            </p>
-          </motion.div>
-        )}
-
-        {/* 保存按钮 + 反馈 */}
-        <div className="mt-4 pt-3 border-t border-zinc-200 space-y-2">
-          <button
-            onClick={handleTrigSave}
-            disabled={trigSaving}
-            className="flex items-center gap-2 px-5 py-2.5 rounded-lg bg-indigo-600 text-white text-sm font-semibold transition-all hover:bg-indigo-700 active:scale-[0.98] disabled:opacity-50"
-          >
-            <Check weight="bold" className="w-4 h-4" />
-            {trigSaving ? '保存中...' : '保存到设备'}
-          </button>
-          {trigMsg && (
-            <div className={`flex items-center gap-2 px-3 py-2 rounded-lg text-sm font-medium ${
-              trigMsg.startsWith('错误') ? 'bg-red-50 text-red-600' :
-              trigMsg.includes('同步中') ? 'bg-amber-50 text-amber-700' :
-              'bg-emerald-50 text-emerald-700'
-            }`}>
-              <span className={`w-2 h-2 rounded-full ${
-                trigMsg.includes('同步中') ? 'bg-amber-400 animate-pulse' : 'bg-emerald-500'
-              }`} />
-              {trigMsg}
-            </div>
+            </motion.div>
           )}
-        </div>
+        </AnimatePresence>
       </div>
+
+      {/* ===== Camera controls — collapsible with save button ===== */}
+      <CameraControls key={visible ? 'visible' : 'hidden'} onConfigChange={onConfigChange} />
 
       {/* 采集图像 — 大图展示 */}
       <div className="relative rounded-2xl overflow-hidden bg-zinc-100 aspect-video mb-3 border border-zinc-100">
@@ -348,5 +323,26 @@ const HardwarePanel = memo(function HardwarePanel({ status, loading, captureEven
     </motion.div>
   )
 })
+
+function SliderField({ label, value, min, max, step, onChange, minValidation, maxValidation }) {
+  const clampedOnChange = (v) => {
+    if (maxValidation !== undefined && v > maxValidation) return
+    if (minValidation !== undefined && v < minValidation) return
+    onChange(v)
+  }
+  return (
+    <div>
+      <label className="text-sm font-semibold text-zinc-500 mb-1.5 block">{label}</label>
+      <div className="flex items-center gap-3">
+        <input type="range" min={min} max={max} step={step} value={value}
+          onChange={e => clampedOnChange(Number(e.target.value))}
+          className="flex-1 h-2 rounded-full appearance-none bg-zinc-200 accent-indigo-500 cursor-pointer" />
+        <input type="number" min={min} max={max} value={value}
+          onChange={e => { const v = Number(e.target.value); if (v >= min && v <= max) clampedOnChange(v) }}
+          className="w-20 px-3 py-1.5 rounded-lg border border-zinc-300 text-sm font-mono text-center focus:outline-none focus:ring-2 focus:ring-indigo-200 focus:border-indigo-400" />
+      </div>
+    </div>
+  )
+}
 
 export default HardwarePanel

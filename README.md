@@ -206,12 +206,17 @@ const int   SERVER_PORT   = 8085;
 ## 变更日志
 
 ### v5.2.0
-- **画质同步修复**：`POST /quality/config` 不再独立于 `trigger_config`，画质修改后同步写入 `trigger_config.jpeg_quality`，ESP32 轮询触发配置即可读到新画质
-- **Query 参数重命名**：`/classify?model=` → `model_name`，消除对全局 `model`（CLIP 实例）的变量名遮蔽
-- **线程安全加固**：`_hardware_was_online` 读写移入 `_hw_lock` 保护，消除 SSE 推送竞态条件
-- **固件 HTTP 错峰**：拍照后 `lastConfigFetch` 设为 `millis() + 2500`，避免与心跳请求同时发出
-- **固件响应体边界保护**：`postMultipartJpeg` 先检查长度再 `concat`，防止超大响应溢出 4KB 缓冲区
-- **冗余代码删除**：`_update_hardware_online` 中永不执行的 `elif pass` 分支清理
+- **画质同步修复**：`POST /quality/config` 同步写入 `trigger_config.jpeg_quality`，侧边栏滑块画质修改后 ESP32 可读到
+- **摄像头参数面板**：新增 `CameraControls` 组件 + `GET/POST /camera/config` 端点，亮度/对比度/饱和度等 20 项参数可调，支持重置默认
+- **配置总览**：新增 `ConfigViewer` 组件 + `/config/all` 端点，前端可查看完整系统配置（可修改+只读）
+- **配置同步状态**：侧栏新增配置同步指示器（synced/pending/outofsync），保存后实时追踪 ESP32 同步进度
+- **变量遮蔽修复**：`/classify` 参数 `model` → `model_name`，消除对全局 CLIP 实例名遮蔽
+- **线程安全加固**：`_hardware_was_online` 读写移入 `_hw_lock` 保护
+- **固件画质参数**：新增 `jpegQuality` 变量，`fmt2jpg` 改用变量而非硬编码 40
+- **固件摄像头参数同步**：`fetchTriggerConfig` 解析 `camera` 子对象并调用 `applyCameraParams()`
+- **固件响应体边界保护**：`postMultipartJpeg` 先检查长度再 `concat`
+- **固件 HTTP 错峰**：拍照后 `lastConfigFetch` 设为 `millis() + 2500`
+- **冗余代码删除**：`_update_hardware_online` 中 `elif pass` 分支清理
 
 ### v5.1.1
 - **HTTP 超时调整**：30s → 15s，更快释放锁死连接

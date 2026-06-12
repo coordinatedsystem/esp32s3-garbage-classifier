@@ -7,31 +7,29 @@ const UploadPanel = memo(function UploadPanel({ mode, isLoading, setIsLoading, s
   const [preview, setPreview] = useState(null)
   const [dragOver, setDragOver] = useState(false)
   const fileRef = useRef(null)
+  const previewRef = useRef(null)
 
   const handleFile = useCallback(async (file) => {
     if (!file || !file.type.startsWith('image/')) {
-      setError('请选择有效的图片文件（JPEG、PNG、WebP）')
+      setError('请选择有效的图片文件')
       return
     }
-
-    if (preview) URL.revokeObjectURL(preview)
+    if (previewRef.current) URL.revokeObjectURL(previewRef.current)
     const url = URL.createObjectURL(file)
+    previewRef.current = url
     setPreview(url)
     setIsLoading(true)
     setError(null)
-
     try {
       const isDetect = mode === 'detect'
-      const data = isDetect
-        ? await detectImage(file)
-        : await classifyImage(file, mode)
+      const data = isDetect ? await detectImage(file) : await classifyImage(file, mode)
       onResult(data, url)
     } catch (err) {
       setError(err.message || '网络错误，请检查后端服务是否运行')
     } finally {
       setIsLoading(false)
     }
-  }, [mode, setIsLoading, setError, onResult, preview])
+  }, [mode, setIsLoading, setError, onResult])
 
   const handleDrop = useCallback((e) => {
     e.preventDefault()
@@ -41,19 +39,12 @@ const UploadPanel = memo(function UploadPanel({ mode, isLoading, setIsLoading, s
   }, [handleFile])
 
   const handleClear = () => {
-    if (preview) {
-      URL.revokeObjectURL(preview)
-      setPreview(null)
-    }
+    if (previewRef.current) { URL.revokeObjectURL(previewRef.current); previewRef.current = null; setPreview(null) }
     if (fileRef.current) fileRef.current.value = ''
     onClear()
   }
 
-  useEffect(() => {
-    return () => {
-      if (preview) URL.revokeObjectURL(preview)
-    }
-  }, [preview])
+  useEffect(() => () => { if (previewRef.current) URL.revokeObjectURL(previewRef.current) }, [])
 
   const modeLabels = {
     clip: 'CLIP 分类', doubao: '豆包 Vision', qwen: '千问 Vision',

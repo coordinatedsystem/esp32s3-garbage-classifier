@@ -89,6 +89,28 @@ int     distanceMin = 30;         // mm
 int     distanceMax = 300;        // mm
 int     cooldownMs  = 2000;       // ms, 物体稳定时间
 int     triggerIntervalMs = 10000; // ms, 两次触发最小间隔
+int     jpegQuality = 85;        // JPEG 画质 10-95，默认 85
+// 摄像头参数 (从服务器同步)
+int     camBrightness = 0;       // -2 .. 2
+int     camContrast = 0;         // -2 .. 2
+int     camSaturation = 0;       // -2 .. 2
+int     camAeLevel = 0;          // -2 .. 2
+int     camAecValue = 250;       // 0..1200 曝光值
+int     camExposureCtrl = 1;     // 0/1 自动曝光
+int     camGainCtrl = 1;         // 0/1 自动增益
+int     camWhitebal = 1;         // 0/1 白平衡
+int     camHmirror = 0;          // 0/1
+int     camVflip = 0;            // 0/1
+int     camAwbGain = 1;          // 0/1 自动白平衡增益
+int     camAec2 = 1;             // 0/1 自动曝光传感器
+int     camAgcGain = 0;           // 0..30 AGC增益
+int     camDcw = 1;              // 0/1 下采样
+int     camBpc = 0;              // 0/1 黑点校正
+int     camWpc = 0;              // 0/1 白点校正
+int     camRawGma = 1;           // 0/1 伽马校正
+int     camLenc = 1;             // 0/1 镜头校正
+int     camSpecialEffect = 0;    // 0..6 特殊效果
+int     camWbMode = 0;           // 0..4 白平衡模式
 unsigned long presenceStart = 0;  // TOF 物体出现计时
 unsigned long lastTrigger = 0;    // 上次触发 ms (防重复触发)
 unsigned long lastConfigFetch = 0;
@@ -291,6 +313,40 @@ bool serverHealth() {
   return (code == 200);
 }
 
+
+// ==============================
+// 应用摄像头参数到传感器
+// ==============================
+void applyCameraParams() {
+  sensor_t *s = esp_camera_sensor_get();
+  if (!s) return;
+  s->set_brightness(s, camBrightness);
+  s->set_contrast(s, camContrast);
+  s->set_saturation(s, camSaturation);
+  s->set_ae_level(s, camAeLevel);
+  s->set_whitebal(s, camWhitebal);
+  s->set_awb_gain(s, camAwbGain);
+  s->set_exposure_ctrl(s, camExposureCtrl);
+  s->set_aec2(s, camAec2);
+  s->set_aec_value(s, camAecValue);
+  s->set_gain_ctrl(s, camGainCtrl);
+  s->set_agc_gain(s, camAgcGain);
+  s->set_hmirror(s, camHmirror);
+  s->set_vflip(s, camVflip);
+  s->set_dcw(s, camDcw);
+  s->set_bpc(s, camBpc);
+  s->set_wpc(s, camWpc);
+  s->set_raw_gma(s, camRawGma);
+  s->set_lenc(s, camLenc);
+  s->set_special_effect(s, camSpecialEffect);
+  s->set_wb_mode(s, camWbMode);
+  Serial.printf("[CAM] params applied: bright=%d cont=%d sat=%d ae=%d aec=%d exp=%d gain=%d agc=%d wb=%d awbg=%d aec2=%d dcw=%d bpc=%d wpc=%d gma=%d lenc=%d eff=%d wbm=%d\n",
+                camBrightness, camContrast, camSaturation, camAeLevel, camAecValue, camExposureCtrl,
+                camGainCtrl, camAgcGain, camWhitebal, camAwbGain, camAec2,
+                camDcw, camBpc, camWpc, camRawGma, camLenc, camSpecialEffect, camWbMode);
+}
+
+
 // ==============================
 // TOF200C 初始化
 // ==============================
@@ -335,7 +391,7 @@ void fetchTriggerConfig() {
   int code = http.GET();
   if (code == 200) {
     String body = http.getString();
-    StaticJsonDocument<256> doc;
+    StaticJsonDocument<768> doc;
     if (!deserializeJson(doc, body)) {
       String m  = doc["mode"] | "button";
       if (m != "button" && m != "distance") {
@@ -346,17 +402,56 @@ void fetchTriggerConfig() {
       int    d2 = doc["distance_max"] | 300;
       int    cd = doc["cooldown_ms"] | 2000;
       int    ti = doc["trigger_interval_ms"] | 10000;
+      int    jq = doc["jpeg_quality"] | 85;
 
-      if (m != triggerMode || d1 != distanceMin || d2 != distanceMax || cd != cooldownMs || ti != triggerIntervalMs) {
+      // 摄像头参数
+      int cb = doc["camera"]["brightness"] | camBrightness;
+      int cc = doc["camera"]["contrast"] | camContrast;
+      int cs = doc["camera"]["saturation"] | camSaturation;
+      int ca = doc["camera"]["ae_level"] | camAeLevel;
+      int cv = doc["camera"]["aec_value"] | camAecValue;
+      int ce = doc["camera"]["exposure_ctrl"] | camExposureCtrl;
+      int cg = doc["camera"]["gain_ctrl"] | camGainCtrl;
+      int cw = doc["camera"]["whitebal"] | camWhitebal;
+      int ch = doc["camera"]["hmirror"] | camHmirror;
+      int cf = doc["camera"]["vflip"] | camVflip;
+      int cawbg = doc["camera"]["awb_gain"] | camAwbGain;
+      int caec2 = doc["camera"]["aec2"] | camAec2;
+      int cagc = doc["camera"]["agc_gain"] | camAgcGain;
+      int cdcw = doc["camera"]["dcw"] | camDcw;
+      int cbpc = doc["camera"]["bpc"] | camBpc;
+      int cwpc = doc["camera"]["wpc"] | camWpc;
+      int crgma = doc["camera"]["raw_gma"] | camRawGma;
+      int clenc = doc["camera"]["lenc"] | camLenc;
+      int ceff = doc["camera"]["special_effect"] | camSpecialEffect;
+      int cwbm = doc["camera"]["wb_mode"] | camWbMode;
+
+      bool camChanged = (cb != camBrightness || cc != camContrast || cs != camSaturation ||
+                         ca != camAeLevel || cv != camAecValue || ce != camExposureCtrl ||
+                         cg != camGainCtrl || cw != camWhitebal || ch != camHmirror || cf != camVflip ||
+                         cawbg != camAwbGain || caec2 != camAec2 || cagc != camAgcGain ||
+                         cdcw != camDcw || cbpc != camBpc || cwpc != camWpc ||
+                         crgma != camRawGma || clenc != camLenc || ceff != camSpecialEffect || cwbm != camWbMode);
+
+      if (m != triggerMode || d1 != distanceMin || d2 != distanceMax || cd != cooldownMs || ti != triggerIntervalMs || jq != jpegQuality || camChanged) {
         tft.fillRect(0, 140, 128, 20, C_BLACK);
         txt(2, 144, 1, C_YELLOW, "Updating...");
-        bool modeChanged = (m != triggerMode);
         triggerMode  = m;
         distanceMin  = d1;
         distanceMax  = d2;
         cooldownMs   = cd;
         triggerIntervalMs = ti;
-        if (modeChanged) {
+        jpegQuality  = jq;
+        if (camChanged) {
+          camBrightness = cb; camContrast = cc; camSaturation = cs;
+          camAeLevel = ca; camAecValue = cv; camExposureCtrl = ce;
+          camGainCtrl = cg; camWhitebal = cw; camHmirror = ch; camVflip = cf;
+          camAwbGain = cawbg; camAec2 = caec2; camAgcGain = cagc;
+          camDcw = cdcw; camBpc = cbpc; camWpc = cwpc;
+          camRawGma = crgma; camLenc = clenc; camSpecialEffect = ceff; camWbMode = cwbm;
+          applyCameraParams();
+        }
+        if (m != triggerMode) {
           presenceStart = 0;
           waitingDistanceClear = false;
         }
@@ -364,8 +459,8 @@ void fetchTriggerConfig() {
         configMsgMs   = millis();
         tft.fillRect(0, 140, 128, 20, C_BLACK);
         txt(2, 144, 1, C_GREEN, "Config OK");
-        Serial.printf("[CFG] trigger=%s range=%d-%dmm cooldown=%dms interval=%dms\n",
-                      triggerMode.c_str(), distanceMin, distanceMax, cooldownMs, triggerIntervalMs);
+        Serial.printf("[CFG] trigger=%s range=%d-%dmm cooldown=%dms interval=%dms quality=%d\n",
+                      triggerMode.c_str(), distanceMin, distanceMax, cooldownMs, triggerIntervalMs, jpegQuality);
         drawReadyConfig();
       }
     }
@@ -468,8 +563,11 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
       int toRead = remaining > (int)sizeof(buf) ? (int)sizeof(buf) : remaining;
       int n = client.readBytes(buf, toRead);
       if (n <= 0) break;
+      if (responseBody.length() + n > 4096) {
+        responseBody.concat(buf, 4096 - responseBody.length());
+        break;
+      }
       responseBody.concat(buf, n);
-      if (responseBody.length() > 4096) break;
       remaining -= n;
     }
   } else {
@@ -513,7 +611,7 @@ bool captureAndClassify() {
   size_t   jpgLen = 0;
 
   bool ok = fmt2jpg(fb->buf, fb->len, fb->width, fb->height,
-                    PIXFORMAT_YUV422, 40, &jpgBuf, &jpgLen);
+                    PIXFORMAT_YUV422, jpegQuality, &jpgBuf, &jpgLen);
   esp_camera_fb_return(fb);
 
   if (!ok || !jpgBuf) {
