@@ -1,6 +1,6 @@
 import { useState, useCallback, useEffect } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Trash, Leaf, Recycle, Warning, Cpu, Brain, Upload, HandPointing, Ruler } from '@phosphor-icons/react'
+import { Trash, Leaf, Recycle, Warning, Cpu, Brain, Upload, Ruler } from '@phosphor-icons/react'
 import { checkHealth, getRuntimeMetrics, getHardwareStatus } from './api'
 import usePolling from './hooks/usePolling'
 import ModelSelector from './components/ModelSelector.jsx'
@@ -23,7 +23,7 @@ const NAV_ITEMS = [
 ]
 
 const MODEL_LABELS = { clip: 'CLIP', doubao: '豆包', qwen: '千问', custom: '自定义', detect: 'YOLO' }
-const TRIGGER_LABELS = { button: '按键触发', distance: '距离触发' }
+const TRIGGER_LABELS = { distance: '距离触发' }
 
 export default function App() {
   const [mode, setMode] = useState('clip')
@@ -62,7 +62,7 @@ export default function App() {
   const latency = health?.latency
   const captures = hwStatus?.capture_count || 0
   const activeModel = health?.active_model || 'clip'
-  const triggerMode = health?.trigger_config?.mode || 'button'
+  const triggerMode = health?.trigger_config?.mode || 'distance'
   const queueDepth = metrics?.queue_depth ?? 0
   const errorRatePct = metrics?.error_rate !== undefined ? (metrics.error_rate * 100).toFixed(1) : '—'
 
@@ -166,20 +166,13 @@ export default function App() {
             </div>
 
             {/* 触发模式 */}
-            <div className={`px-3 py-2.5 rounded-xl transition-colors ${
-              triggerMode === 'distance' ? 'bg-amber-50/60' : 'bg-emerald-50/60'
-            }`}>
+            <div className="px-3 py-2.5 rounded-xl transition-colors bg-amber-50/60">
               <div className="flex items-center gap-2">
-                {triggerMode === 'distance'
-                  ? <Ruler weight="bold" className="w-4 h-4 text-amber-500 flex-shrink-0" />
-                  : <HandPointing weight="bold" className="w-4 h-4 text-emerald-500 flex-shrink-0" />
-                }
+                <Ruler weight="bold" className="w-4 h-4 text-amber-500 flex-shrink-0" />
                 <span className="text-xs font-medium text-zinc-500">触发</span>
               </div>
-              <p className={`text-[13px] font-semibold mt-0.5 pl-6 ${
-                triggerMode === 'distance' ? 'text-amber-700' : 'text-emerald-700'
-              }`}>
-                {TRIGGER_LABELS[triggerMode] || triggerMode}
+              <p className="text-[13px] font-semibold mt-0.5 pl-6 text-amber-700">
+               距离触发
               </p>
             </div>
 
@@ -210,7 +203,7 @@ export default function App() {
 
           {/* 底部版本 */}
           <div className="px-4 py-3 border-t border-zinc-100">
-            <p className="text-[10px] text-zinc-400">v5.0.0</p>
+            <p className="text-[10px] text-zinc-400">v5.3.0</p>
           </div>
         </nav>
 

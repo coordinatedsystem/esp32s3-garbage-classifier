@@ -1,6 +1,6 @@
 # ESP32-S3 智能垃圾分类系统
 
-基于 ESP32-S3 + OV3660 + CLIP/Vision LLM 的智能垃圾分类识别系统。硬件端拍照上传，后端 AI 识别（CLIP + 豆包/千问/自定义视觉大模型），前端 Web 仪表板实时监控。
+基于 ESP32-S3 + OV3660 + TOF200C + CLIP/Vision LLM 的智能垃圾分类识别系统。ESP32-S3 通过 TOF 激光测距自动触发拍照上传，后端 AI 识别（CLIP + 豆包/千问/自定义视觉大模型），前端 Web 仪表板实时监控。
 
 ## 硬件
 
@@ -37,7 +37,6 @@
 
 ### 操作方式
 
-- **按键触发**：短按 BOOT 键 (GPIO 0) 拍照并识别
 - **距离触发**：TOF 检测到物体在设定距离范围内稳定超过缓冲时间后自动触发（前端可配置）
 
 ## 项目结构
@@ -135,7 +134,7 @@ const int   SERVER_PORT   = 8085;
 
 **模型路由**：前端设置激活模型 → ESP32 始终调用 `/classify` → 后端按激活模型路由（CLIP / 豆包 / 千问 / 自定义）。ESP32 无需刷写固件即可跟随前端模型切换。视觉模型未配置或调用失败时自动回退到 CLIP。
 
-**硬件在线检测**：ESP32 每 30 秒调用 `/hardware/heartbeat` 上报心跳，并拉取 `/trigger/config` 同步触发参数。服务端记录 `last_seen` 时间戳，超过 60 秒无心跳则判定离线。
+**硬件在线检测**：ESP32 每 30 秒调用 `/hardware/heartbeat` 上报心跳，并拉取 `/trigger/config` 同步触发参数。服务端记录 `last_seen` 时间戳，超过 60 秒无心跳则判定离线。固件空闲时每 8 秒 TCP 探测后端可达性，避免 WiFi 已连但服务不可达的盲区。
 
 **实时推送**：后端通过 SSE（Server-Sent Events）在 ESP32 拍照后即时推送 `new_capture` 事件到前端，前端无需等待轮询即可立即刷新采集图像。
 
@@ -167,12 +166,12 @@ const int   SERVER_PORT   = 8085;
 | 模块 | 说明 |
 |------|------|
 | **App (侧栏)** | 左侧 220px 导航栏集成系统状态（服务/硬件在线、当前模型、触发模式），10 秒轮询刷新 |
-| **HardwarePanel** | 硬件四维度卡片（连接/采集/活动/固件）+ 触发配置（模式/距离/间隔）+ 实时采集预览 |
+| **HardwarePanel** | 硬件四维度卡片（连接/采集/活动/固件）+ 距离触发配置（距离范围/缓冲时间/触发间隔）+ 实时采集预览 |
 | **ModelSelector** | 5 模型标签栏（CLIP/豆包/千问/自定义/YOLO），两步确认切换，独立 API Key 配置 |
 | **UploadPanel** | 拖拽/点击上传本地图片，自动路由到当前激活模型 |
 | **ResultsDisplay** | 分类结果 + 置信度仪表 + 垃圾类别说明 + 模型名称 |
 | **ConfidenceGauge** | SVG 动画环形置信度仪表（≥80% 绿 / ≥50% 黄 / <50% 红） |
-| **HistoryList** | 服务端历史记录，按分类筛选，显示触发来源标签（按键/距离触发） |
+| **HistoryList** | 服务端历史记录，按分类筛选，显示距离触发来源标签 |
 
 ## 识别模型
 
@@ -204,6 +203,30 @@ const int   SERVER_PORT   = 8085;
 | 视觉 API | OpenAI-compatible format (豆包/千问/自定义) |
 
 ## 变更日志
+
+### v5.3.0
+- **移除按键触发模式**：全面删除固件/前端/服务端中的 button 触发模式，TOF 距离触发成为唯一触发方式。固件删除 BOOT 按键检测、button 分支渲染、冗余状态机代码；前端移除模式切换 UI、HandPointing 图标、动画条件渲染
+- **CLIP 标签描述详细化**：150+ 标签从简短提示词扩展为丰富的视觉描述词（例如 `"笔"` → `"a ballpoint pen with a plastic body and metal tip, common stationery"`），大幅提升 CLIP 零样本分类准确率
+- **固件 TCP 存活性检测**：新增 `probeServerLiveness()` 机制，空闲时每 8 秒 TCP 探测后端可达性，解决 WiFi 已连但服务不可达的盲区。屏幕保留就绪状态而非闪断重连
+- **固件 WiFi 稳定性增强**：禁用省电模式（`WIFI_PS_NONE`）、`WiFi.setSleep(false)`，增加连接超时到 30 秒（60×500ms），启动时断开残留连接重新初始化
+- **固件 HTTP 重试增强**：`postMultipartJpeg` 重试 2→3 次，socket 超时 5s→8s，连接失败后 500ms 退避重试；4xx/5xx 直接返回不重试
+- **心跳 Keep-Alive**：心跳请求改用 `Connection: keep-alive` 复用 TCP 连接，减少 ESP32 和服务端 TCP 握手开销
+- **服务端稳定性调优**：`HARDWARE_STALE_SECONDS` 35→60（双倍容忍包丢失）；`INFERENCE_WORKERS` 上限 8；uvicorn 添加 `timeout_keep_alive=30` 和 `backlog=256`
+- **缩略图质量提升**：`_make_thumbnail` JPEG 质量 60→95，前端缩略图更清晰
+- **桌面端 CLIP 标签同步**：`clip_desktop.py` LABEL_MAP 同步更新为详细描述词
+
+### v5.2.0
+- **画质同步修复**：`POST /quality/config` 同步写入 `trigger_config.jpeg_quality`，侧边栏滑块画质修改后 ESP32 可读到
+- **摄像头参数面板**：新增 `CameraControls` 组件 + `GET/POST /camera/config` 端点，亮度/对比度/饱和度等 20 项参数可调，支持重置默认
+- **配置总览**：新增 `ConfigViewer` 组件 + `/config/all` 端点，前端可查看完整系统配置（可修改+只读）
+- **配置同步状态**：侧栏新增配置同步指示器（synced/pending/outofsync），保存后实时追踪 ESP32 同步进度
+- **变量遮蔽修复**：`/classify` 参数 `model` → `model_name`，消除对全局 CLIP 实例名遮蔽
+- **线程安全加固**：`_hardware_was_online` 读写移入 `_hw_lock` 保护
+- **固件画质参数**：新增 `jpegQuality` 变量，`fmt2jpg` 改用变量而非硬编码 40
+- **固件摄像头参数同步**：`fetchTriggerConfig` 解析 `camera` 子对象并调用 `applyCameraParams()`
+- **固件响应体边界保护**：`postMultipartJpeg` 先检查长度再 `concat`
+- **固件 HTTP 错峰**：拍照后 `lastConfigFetch` 设为 `millis() + 2500`
+- **冗余代码删除**：`_update_hardware_online` 中 `elif pass` 分支清理
 
 ### v5.1.0
 - **CLIP 文本特征预计算**：启动时一次性计算 151 条文本 prompt 的 L2 归一化特征向量，推理时仅跑图像编码器 + 余弦相似度，推理延迟降低 35–50%（800–1200ms → 400–600ms）

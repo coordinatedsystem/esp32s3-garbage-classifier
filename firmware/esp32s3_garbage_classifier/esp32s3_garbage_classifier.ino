@@ -17,6 +17,7 @@
 #include "wifi_config.h"
 #include "img_converters.h"   // fmt2jpg
 #include "esp_heap_caps.h"    // heap_caps_malloc (PSRAM)
+#include "esp_wifi.h"          // esp_wifi_set_ps, esp_wifi_set_protocol
 
 // ==============================
 // 屏幕引脚 (软件SPI)
@@ -68,7 +69,11 @@ Adafruit_VL53L0X tof = Adafruit_VL53L0X();
 // 参数
 // ==============================
 #define HTTP_TIMEOUT_MS  15000
-#define FIRMWARE_VERSION "5.1.1"
+#define FIRMWARE_VERSION "5.3.0"
+#define HEARTBEAT_MS     30000
+#define CONFIG_FETCH_MS  30000
+#define LIVENESS_PROBE_MS  8000   // 后端 TCP 探测间隔
+#define LIVENESS_TIMEOUT   3000   // TCP 连接超时
 
 // 颜色
 #define C_BLACK     ST7735_BLACK
@@ -84,7 +89,7 @@ Adafruit_VL53L0X tof = Adafruit_VL53L0X();
 // 全局
 // ==============================
 // 触发配置 (从服务器拉取)
-String  triggerMode = "button";   // "button" | "distance"
+String  triggerMode = "distance"; // "button" | "distance"
 int     distanceMin = 30;         // mm
 int     distanceMax = 300;        // mm
 int     cooldownMs  = 2000;       // ms, 物体稳定时间
@@ -100,10 +105,11 @@ unsigned long postCaptureUntil = 0;     // 结果页保持到期时间
 int lastCountdownSec = -1;              // 防重复刷新倒计时
 bool waitingDistanceClear = false;      // 自动触发后等待目标移开
 unsigned long distanceClearDeadline = 0;
-bool lastBootPressed = false;
 unsigned long lastHeartbeatMs = 0;
 DynamicJsonDocument classifyDoc(2048);  // Actual max response ~1200 bytes observed
 bool firstBoot = true;
+unsigned long lastLivenessProbe = 0;     // 后端 TCP 探测计时
+bool serverReachable = false;            // 后端是否可达
 
 // ==============================
 // 屏幕小工具
@@ -146,7 +152,16 @@ bool wifiConnect() {
   txt(0, 0, 2, C_CYAN, "WiFi Setup");
   tft.drawFastHLine(0, 18, 128, C_DARKGREY);
 
+  // 断开并重新初始化 WiFi，清除残留状态
+  WiFi.disconnect(true, true);
+  delay(200);
+  WiFi.mode(WIFI_OFF);
+  delay(100);
   WiFi.mode(WIFI_STA);
+
+  // 禁用省电模式，保持 WiFi 持续活跃
+  WiFi.setSleep(false);
+  esp_wifi_set_ps(WIFI_PS_NONE);
 
   int infoY;
 
@@ -189,6 +204,7 @@ bool wifiConnect() {
   bar("Connecting...");
   txt(0, infoY + 22, 1, C_YELLOW, "Connecting...");
 
+  // 增加连接超时到 30s (60 * 500ms)，应对路由器干扰
   WiFi.begin(WIFI_SSID, WIFI_PASS);
   int retries = 0;
   while (WiFi.status() != WL_CONNECTED && retries < 60) {
@@ -200,12 +216,17 @@ bool wifiConnect() {
   wl_status_t st = WiFi.status();
   tft.fillRect(0, infoY + 22, 128, 10, C_BLACK);
   txt(0, infoY + 22, 1, C_WHITE, "Status:");
-  num(48, infoY + 22, 1, (st == 3) ? C_GREEN : C_RED, st);
+  num(48, infoY + 22, 1, (st == WL_CONNECTED) ? C_GREEN : C_RED, st);
 
   if (st == WL_CONNECTED) {
+    // 显示信号强度和 IP
+    int rssi = WiFi.RSSI();
     txt(0, infoY + 34, 1, C_GREEN, "CONNECTED");
     txt(0, infoY + 46, 1, C_WHITE, "IP:");
     txt(18, infoY + 46, 1, C_GREEN, WiFi.localIP().toString().c_str());
+    txt(0, infoY + 58, 1, C_WHITE, "RSSI:");
+    num(36, infoY + 58, 1, rssi > -75 ? C_GREEN : C_YELLOW, rssi);
+    txt(60, infoY + 58, 1, C_DARKGREY, "dBm");
     delay(1500);
     return true;
   }
@@ -244,7 +265,7 @@ bool cameraInit() {
   config.xclk_freq_hz  = 20000000;
   config.pixel_format  = PIXFORMAT_YUV422;  // 传感器原生色彩空间，无 RGB565 字节序问题
   config.frame_size    = FRAMESIZE_QVGA;     // 320x240
-  config.jpeg_quality  = 10;
+  config.jpeg_quality  = 0;    // 0=best
   config.fb_count      = 1;   // 单缓冲，减轻 PSRAM 碎片化
   config.fb_location   = CAMERA_FB_IN_PSRAM;
   config.grab_mode     = CAMERA_GRAB_WHEN_EMPTY;
@@ -280,15 +301,31 @@ bool cameraInit() {
 // ==============================
 bool serverHealth() {
   WiFiClient client;
-  HTTPClient http;
-  String url = "http://" + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "/health";
-  http.begin(client, url);
-  http.setTimeout(5000);
-  http.addHeader("Connection", "close");
-  int code = http.GET();
-  http.end();
+  client.setTimeout(LIVENESS_TIMEOUT);
+  if (!client.connect(SERVER_HOST, SERVER_PORT)) {
+    Serial.println("[SRV] TCP connect FAIL");
+    return false;
+  }
+  // 直接 TCP connect 成功即服务可达，不需发 HTTP 请求
   client.stop();
-  return (code == 200);
+  return true;
+}
+
+// ==============================
+// TCP 存活性检测 —— 空闲时每 8s 探测后端是否可达
+// 解决 WiFi 已连接但后端实际不可达的场景
+// ==============================
+bool probeServerLiveness() {
+  WiFiClient client;
+  client.setTimeout(LIVENESS_TIMEOUT);
+  if (!client.connect(SERVER_HOST, SERVER_PORT)) {
+    serverReachable = false;
+    Serial.println("[LIVENESS] server unreachable");
+    return false;
+  }
+  client.stop();
+  serverReachable = true;
+  return true;
 }
 
 // ==============================
@@ -330,17 +367,19 @@ void fetchTriggerConfig() {
   HTTPClient http;
   String url = "http://" + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "/trigger/config";
   http.begin(client, url);
-  http.setTimeout(3000);
+  http.setTimeout(8000);
+  // 配置同步用短连接: 请求少，复用连接意义不大
   http.addHeader("Connection", "close");
   int code = http.GET();
   if (code == 200) {
+    serverReachable = true;
     String body = http.getString();
     StaticJsonDocument<256> doc;
     if (!deserializeJson(doc, body)) {
-      String m  = doc["mode"] | "button";
-      if (m != "button" && m != "distance") {
-        Serial.printf("[CFG] invalid mode '%s', defaulting to button\n", m.c_str());
-        m = "button";
+      String m  = doc["mode"] | "distance";
+      if (m != "distance") {
+        Serial.printf("[CFG] invalid mode '%s', defaulting to distance\n", m.c_str());
+        m = "distance";
       }
       int    d1 = doc["distance_min"] | 30;
       int    d2 = doc["distance_max"] | 300;
@@ -383,9 +422,15 @@ void sendHeartbeat() {
              + "&firmware_version=" + String(FIRMWARE_VERSION)
              + "&ip_address=" + WiFi.localIP().toString();
   http.begin(client, url);
-  http.setTimeout(3000);
-  http.addHeader("Connection", "close");
-  http.GET();
+  http.setTimeout(8000);
+  // Keep-Alive: 心跳复用连接，减轻 ESP32 和服务器 TCP 开销
+  http.addHeader("Connection", "keep-alive");
+  int code = http.GET();
+  if (code == 200) {
+    serverReachable = true;
+  } else {
+    Serial.printf("[HB] failed code=%d\n", code);
+  }
   http.end();
   client.stop();
 }
@@ -397,93 +442,112 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
                       "Content-Type: image/jpeg\r\n\r\n";
   const String foot = "\r\n--" + boundary + "--\r\n";
 
-  WiFiClient client;
-  client.setTimeout(5000);
-  client.stop();  // 清理 socket 状态，防止残留连接
-  for (int retry = 0; retry < 2; retry++) {
-    if (retry > 0) { delay(300); client.stop(); }
-    if (client.connect(SERVER_HOST, SERVER_PORT)) break;
-    if (retry == 1) { statusCode = -1; return false; }
-  }
-
-  // 合并所有请求头 → 一次发送，减少 TCP 分段
-  String req = "POST " + path + " HTTP/1.1\r\n";
-  req += "Host: " + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "\r\n";
-  req += "Content-Type: multipart/form-data; boundary=" + boundary + "\r\n";
-  req += "Content-Length: " + String(head.length() + jpgLen + foot.length()) + "\r\n";
-  req += "Connection: close\r\n\r\n";
-  req += head;
-  client.print(req);
-
-  // 分块写入 JPEG 体
-  size_t sent = 0;
-  while (sent < jpgLen) {
-    size_t chunk = (jpgLen - sent > 4096) ? 4096 : (jpgLen - sent);
-    size_t written = client.write(jpgBuf + sent, chunk);
-    if (written == 0) { client.stop(); statusCode = -2; return false; }
-    sent += written;
-    yield();  // 让出 CPU 给 TCP/IP 栈
-  }
-  client.print(foot);
-  client.flush();
-
-  // Wait for response
-  unsigned long start = millis();
-  while (!client.available() && client.connected()) {
-    if (millis() - start > HTTP_TIMEOUT_MS) { client.stop(); statusCode = -3; return false; }
-    delay(1);
-  }
-
-  // Parse HTTP status code
-  String statusLine = client.readStringUntil('\n');
-  int sp1 = statusLine.indexOf(' ');
-  int sp2 = statusLine.indexOf(' ', sp1 + 1);
-  statusCode = (sp1 >= 0 && sp2 > sp1) ? statusLine.substring(sp1 + 1, sp2).toInt() : -4;
-
-  // Parse Content-Length from response headers
-  int contentLength = -1;
-  while (client.connected()) {
-    String line = client.readStringUntil('\n');
-    if (line == "\r" || line.length() <= 1) break;
-    String lower = line;
-    lower.toLowerCase();
-    if (lower.startsWith("content-length:")) {
-      int colon = line.indexOf(':');
-      if (colon >= 0) contentLength = line.substring(colon + 1).toInt();
+  // 最多重试 3 次（每次包含连接+发送+读取完整周期）
+  for (int attempt = 0; attempt < 3; attempt++) {
+    if (attempt > 0) {
+      delay(500);  // 重试间隔
+      Serial.printf("[HTTP] retry %d/3\n", attempt + 1);
     }
-  }
 
-  // Read response body
-  responseBody = "";
-  responseBody.reserve(4096);
-  if (contentLength >= 0) {
-    int remaining = contentLength;
-    while (remaining > 0 && client.connected()) {
-      start = millis();
-      while (!client.available() && client.connected()) {
-        if (millis() - start > HTTP_TIMEOUT_MS) { client.stop(); return false; }
-        delay(1);
-      }
-      char buf[256];
-      int toRead = remaining > (int)sizeof(buf) ? (int)sizeof(buf) : remaining;
-      int n = client.readBytes(buf, toRead);
-      if (n <= 0) break;
-      responseBody.concat(buf, n);
-      if (responseBody.length() > 4096) break;
-      remaining -= n;
+    WiFiClient client;
+    client.setTimeout(8000);  // socket 单次操作超时
+    client.stop();            // 清理残留 socket
+
+    // 连接
+    int connectStart = millis();
+    if (!client.connect(SERVER_HOST, SERVER_PORT)) {
+      Serial.printf("[HTTP] connect failed\n");
+      client.stop();
+      continue;
     }
-  } else {
-    // Fallback: read until connection closes
-    while (client.connected() || client.available()) {
-      while (client.available()) {
-        if (responseBody.length() > 4096) break;
-        responseBody += (char)client.read();
-      }
+
+    // 合并请求头
+    String req = "POST " + path + " HTTP/1.1\r\n";
+    req += "Host: " + String(SERVER_HOST) + ":" + String(SERVER_PORT) + "\r\n";
+    req += "Content-Type: multipart/form-data; boundary=" + boundary + "\r\n";
+    req += "Content-Length: " + String(head.length() + jpgLen + foot.length()) + "\r\n";
+    req += "Connection: close\r\n\r\n";
+    req += head;
+    client.print(req);
+
+    // 分块写入 JPEG 体
+    size_t sent = 0;
+    bool writeFail = false;
+    while (sent < jpgLen) {
+      size_t chunk = (jpgLen - sent > 4096) ? 4096 : (jpgLen - sent);
+      size_t written = client.write(jpgBuf + sent, chunk);
+      if (written == 0) { writeFail = true; break; }
+      sent += written;
+      yield();
+    }
+    if (writeFail) { client.stop(); continue; }
+
+    client.print(foot);
+    client.flush();
+
+    // 等待响应
+    unsigned long start = millis();
+    while (!client.available() && client.connected()) {
+      if (millis() - start > HTTP_TIMEOUT_MS) { client.stop(); continue; }
       delay(1);
     }
+
+    // 解析 HTTP 状态行
+    String statusLine = client.readStringUntil('\n');
+    int sp1 = statusLine.indexOf(' ');
+    int sp2 = statusLine.indexOf(' ', sp1 + 1);
+    statusCode = (sp1 >= 0 && sp2 > sp1) ? statusLine.substring(sp1 + 1, sp2).toInt() : -4;
+
+    // 跳过响应头
+    int contentLength = -1;
+    while (client.connected()) {
+      String line = client.readStringUntil('\n');
+      if (line == "\r" || line.length() <= 1) break;
+      String lower = line;
+      lower.toLowerCase();
+      if (lower.startsWith("content-length:")) {
+        int colon = line.indexOf(':');
+        if (colon >= 0) contentLength = line.substring(colon + 1).toInt();
+      }
+    }
+
+    // 读响应体
+    responseBody = "";
+    responseBody.reserve(4096);
+    if (contentLength >= 0) {
+      int remaining = contentLength;
+      while (remaining > 0 && client.connected()) {
+        start = millis();
+        while (!client.available() && client.connected()) {
+          if (millis() - start > HTTP_TIMEOUT_MS) { client.stop(); return false; }
+          delay(1);
+        }
+        char buf[256];
+        int toRead = remaining > (int)sizeof(buf) ? (int)sizeof(buf) : remaining;
+        int n = client.readBytes(buf, toRead);
+        if (n <= 0) break;
+        responseBody.concat(buf, n);
+        if (responseBody.length() > 4096) break;
+        remaining -= n;
+      }
+    } else {
+      while (client.connected() || client.available()) {
+        while (client.available()) {
+          if (responseBody.length() > 4096) break;
+          responseBody += (char)client.read();
+        }
+        delay(1);
+      }
+    }
+    client.stop();
+
+    if (statusCode == 200) return true;
+    // HTTP 4xx/5xx → 不重试，直接返回
+    if (statusCode >= 400) return false;
   }
-  client.stop();
-  return true;
+  // 全部重试失败
+  statusCode = -1;
+  return false;
 }
 
 // ==============================
@@ -554,8 +618,9 @@ bool captureAndClassify() {
     txt(0, 95, 1, C_DARKGREY, "Retry later");
     return false;
   }
-
+  // 通信成功
   unsigned long t2 = millis();
+  serverReachable = true;
 
   // 解析 — 使用堆分配避免大对象占栈
   int jsonStart = body.indexOf('{');
@@ -633,9 +698,8 @@ bool captureAndClassify() {
            inferMs / 1000, (inferMs % 1000) / 100);
   txt(0, 110, 1, C_DARKGREY, buf);
 
-  snprintf(buf, sizeof(buf), "T%d.%ds %s",
-           totalMs / 1000, (totalMs % 1000) / 100,
-           triggerMode == "button" ? "BTN" : "TOF");
+  snprintf(buf, sizeof(buf), "T%d.%ds TOF",
+           totalMs / 1000, (totalMs % 1000) / 100);
   txt(0, 122, 1, C_DARKGREY, buf);
 
   txt(0, 136, 1, C_DARKGREY, modelUs.c_str());
@@ -690,74 +754,59 @@ void drawReadyWiFi() {
 
 void drawReadyConfig() {
   // Redraw only the config parameters area and trigger mode label
-  if (triggerMode == "distance") {
-    tft.fillRect(0, 20, 128, 60, C_BLACK);
-    txt(0, 20, 1, C_CYAN, "Auto (TOF)");
-    txt(0, 34, 1, C_DARKGREY, "Range:");
-    num(42, 34, 1, C_WHITE, distanceMin);
-    txt(0, 46, 1, C_DARKGREY, "  -");
-    num(20, 46, 1, C_WHITE, distanceMax);
-    txt(46, 46, 1, C_DARKGREY, "mm");
-    txt(0, 58, 1, C_DARKGREY, "Buf:");
-    num(26, 58, 1, C_WHITE, cooldownMs);
-    txt(54, 58, 1, C_DARKGREY, "ms");
-    txt(0, 68, 1, C_DARKGREY, "Int:");
-    num(26, 68, 1, C_WHITE, triggerIntervalMs / 1000);
-    txt(38, 68, 1, C_DARKGREY, "s");
-  } else {
-    tft.fillRect(0, 28, 128, 72, C_BLACK);
-    txt(0, 28, 1, C_WHITE, "Place item in");
-    txt(0, 40, 1, C_WHITE, "front of camera");
-    txt(0, 62, 2, C_CYAN, "Press BOOT");
-    txt(0, 88, 1, C_YELLOW, "to classify");
-  }
+  tft.fillRect(0, 20, 128, 60, C_BLACK);
+  txt(0, 20, 1, C_CYAN, "Auto (TOF)");
+  txt(0, 34, 1, C_DARKGREY, "Range:");
+  num(42, 34, 1, C_WHITE, distanceMin);
+  txt(0, 46, 1, C_DARKGREY, "  -");
+  num(20, 46, 1, C_WHITE, distanceMax);
+  txt(46, 46, 1, C_DARKGREY, "mm");
+  txt(0, 58, 1, C_DARKGREY, "Buf:");
+  num(26, 58, 1, C_WHITE, cooldownMs);
+  txt(54, 58, 1, C_DARKGREY, "ms");
+  txt(0, 68, 1, C_DARKGREY, "Int:");
+  num(26, 68, 1, C_WHITE, triggerIntervalMs / 1000);
+  txt(38, 68, 1, C_DARKGREY, "s");
 
   // Trigger mode label
   tft.fillRect(0, 130, 128, 10, C_BLACK);
   tft.setCursor(0, 130);
   tft.setTextSize(1);
   tft.setTextColor(C_DARKGREY);
-  tft.print(triggerMode == "distance" ? "Trig:Auto" : "Trig:Btn");
+  tft.print("Trig:Auto");
 }
 
 void drawReadyAll() {
-  // Full redraw — keep original drawReady logic
+  // Full redraw
   cls();
   txt(0, 0, 2, C_WHITE, "Ready");
 
-  if (triggerMode == "distance") {
-    txt(0, 20, 1, C_CYAN, "Auto (TOF)");
-    txt(0, 34, 1, C_DARKGREY, "Range:");
-    num(42, 34, 1, C_WHITE, distanceMin);
-    txt(0, 46, 1, C_DARKGREY, "  -");
-    num(20, 46, 1, C_WHITE, distanceMax);
-    txt(46, 46, 1, C_DARKGREY, "mm");
-    txt(0, 58, 1, C_DARKGREY, "Buf:");
-    num(26, 58, 1, C_WHITE, cooldownMs);
-    txt(54, 58, 1, C_DARKGREY, "ms");
-    txt(0, 68, 1, C_DARKGREY, "Int:");
-    num(26, 68, 1, C_WHITE, triggerIntervalMs / 1000);
-    txt(38, 68, 1, C_DARKGREY, "s");
+  txt(0, 20, 1, C_CYAN, "Auto (TOF)");
+  txt(0, 34, 1, C_DARKGREY, "Range:");
+  num(42, 34, 1, C_WHITE, distanceMin);
+  txt(0, 46, 1, C_DARKGREY, "  -");
+  num(20, 46, 1, C_WHITE, distanceMax);
+  txt(46, 46, 1, C_DARKGREY, "mm");
+  txt(0, 58, 1, C_DARKGREY, "Buf:");
+  num(26, 58, 1, C_WHITE, cooldownMs);
+  txt(54, 58, 1, C_DARKGREY, "ms");
+  txt(0, 68, 1, C_DARKGREY, "Int:");
+  num(26, 68, 1, C_WHITE, triggerIntervalMs / 1000);
+  txt(38, 68, 1, C_DARKGREY, "s");
 
-    int dist = readTOF();
-    txt(0, 82, 1, C_DARKGREY, "TOF:");
-    if (dist >= 0) {
-      num(28, 82, 1, C_GREEN, dist);
-      txt(52, 82, 1, C_DARKGREY, "mm");
-      if (dist >= distanceMin && dist <= distanceMax) {
-        txt(0, 96, 1, C_GREEN, "IN RANGE");
-      } else {
-        txt(0, 96, 1, C_DARKGREY, "waiting...");
-      }
+  int dist = readTOF();
+  txt(0, 82, 1, C_DARKGREY, "TOF:");
+  if (dist >= 0) {
+    num(28, 82, 1, C_GREEN, dist);
+    txt(52, 82, 1, C_DARKGREY, "mm");
+    if (dist >= distanceMin && dist <= distanceMax) {
+      txt(0, 96, 1, C_GREEN, "IN RANGE");
     } else {
-      txt(28, 82, 1, C_RED, "---");
-      txt(0, 96, 1, C_DARKGREY, "no target");
+      txt(0, 96, 1, C_DARKGREY, "waiting...");
     }
   } else {
-    txt(0, 28, 1, C_WHITE, "Place item in");
-    txt(0, 40, 1, C_WHITE, "front of camera");
-    txt(0, 62, 2, C_CYAN, "Press BOOT");
-    txt(0, 88, 1, C_YELLOW, "to classify");
+    txt(28, 82, 1, C_RED, "---");
+    txt(0, 96, 1, C_DARKGREY, "no target");
   }
 
   // WiFi status
@@ -773,7 +822,7 @@ void drawReadyAll() {
   tft.setCursor(0, 130);
   tft.setTextSize(1);
   tft.setTextColor(C_DARKGREY);
-  tft.print(triggerMode == "distance" ? "Trig:Auto" : "Trig:Btn");
+  tft.print("Trig:Auto");
 }
 
 // ==============================
@@ -832,24 +881,20 @@ void setup() {
 void loop() {
   unsigned long now = millis();
 
-  // WiFi 断线重连
-  if (WiFi.status() != WL_CONNECTED) {
-    drawBoot();
-    txt(0, 83, 1, C_RED, "WiFi lost");
-    txt(0, 95, 1, C_WHITE, "Reconnecting...");
-    wifiConnect();
-    fetchTriggerConfig();
-    lastConfigFetch = millis();
-    drawReadyAll();
-    return;
+  // === 后端 TCP 存活性检测 ===
+  // 即使 WiFi 已连接，后端也可能不可达
+  // 每 8 秒 TCP connect 探测，失败则标记服务不可达
+  if (now - lastLivenessProbe > LIVENESS_PROBE_MS) {
+    lastLivenessProbe = now;
+    probeServerLiveness();
   }
 
   // 每 30 秒发送心跳并同步触发配置
-  if (now - lastHeartbeatMs > 30000) {
+  if (now - lastHeartbeatMs > HEARTBEAT_MS) {
     sendHeartbeat();
     lastHeartbeatMs = now;
   }
-  if (now - lastConfigFetch > 30000) {
+  if (now - lastConfigFetch > CONFIG_FETCH_MS) {
     fetchTriggerConfig();
     lastConfigFetch = now;
   }
@@ -878,24 +923,7 @@ void loop() {
     drawReadyAll();
   }
 
-  if (triggerMode == "button") {
-    // === 按钮触发 ===
-    bool bootPressed = (digitalRead(PIN_BOOT) == LOW);
-    if (bootPressed && !lastBootPressed) {
-      delay(30);
-      if (digitalRead(PIN_BOOT) == LOW) {
-        captureAndClassify();
-        postCaptureUntil = millis() + 5000;
-        lastCountdownSec = -1;
-        waitingDistanceClear = false;
-        presenceStart = 0;
-        fetchTriggerConfig();
-        lastHeartbeatMs = millis();
-        lastConfigFetch = millis();
-      }
-    }
-    lastBootPressed = bootPressed;
-  } else if (triggerMode == "distance") {
+  if (triggerMode == "distance") {
     // === 距离触发 ===
     int dist = readTOF();
 
@@ -956,23 +984,6 @@ void loop() {
       }
       presenceStart = 0;
     }
-  } else {
-    // Unknown triggerMode, fallback to button behavior
-    bool bootPressed = (digitalRead(PIN_BOOT) == LOW);
-    if (bootPressed && !lastBootPressed) {
-      delay(30);
-      if (digitalRead(PIN_BOOT) == LOW) {
-        captureAndClassify();
-        postCaptureUntil = millis() + 5000;
-        lastCountdownSec = -1;
-        waitingDistanceClear = false;
-        presenceStart = 0;
-        fetchTriggerConfig();
-        lastHeartbeatMs = millis();
-        lastConfigFetch = millis();
-      }
-    }
-    lastBootPressed = bootPressed;
   }
   delay(30);
 }

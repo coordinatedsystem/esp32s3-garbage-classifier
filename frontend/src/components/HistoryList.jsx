@@ -160,7 +160,7 @@ const HistoryList = memo(function HistoryList({ categoryConfig, refreshKey, visi
               const time = new Date(entry.timestamp).toLocaleTimeString('zh-CN', { hour: '2-digit', minute: '2-digit' })
               const pct = entry.data?.confidence !== undefined ? Math.round(entry.data.confidence * 100) : null
               const respMs = entry.data?.response_time_ms
-              const trigLabel = ({ distance: '距离触发', button: '按键触发' })[entry.trigger_mode] || null
+              const trigLabel = ({ distance: '距离触发', button: '距离触发' })[entry.trigger_mode] || null
 
               return (
                 <motion.div

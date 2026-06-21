@@ -38,45 +38,177 @@ logger = logging.getLogger("garbage-classifier")
 
 # ===================== 标签映射（完全保留） =====================
 LABEL_MAP = {
-    "a common stationery pen": "笔", "a book for study": "书本", "an eraser for writing": "橡皮",
-    "a sheet of white paper": "纸张", "a student notebook": "笔记本", "a pencil": "铅笔",
-    "a ruler for measuring length": "尺子", "a stapler": "订书机", "a folder": "文件夹",
-    "a envelope": "信封", "a printer paper": "打印纸", "a correction tape": "修正带",
-    "an apple": "苹果", "a banana": "香蕉", "an orange": "橙子", "a watermelon": "西瓜",
-    "a grape": "葡萄", "a strawberry": "草莓", "a tomato": "西红柿", "a cucumber": "黄瓜",
-    "a carrot": "胡萝卜", "a potato": "土豆", "a cabbage": "白菜", "a spinach": "菠菜",
-    "a leftover rice": "剩饭", "a leftover dish": "剩菜", "a bone": "骨头", "a egg shell": "蛋壳",
-    "a tea leaf": "茶叶渣", "a coffee grounds": "咖啡渣", "a bread": "面包", "a noodle": "面条",
-    "a biscuit": "饼干", "a potato chip": "薯片", "a chocolate": "巧克力", "a candy": "糖果",
-    "a instant noodle": "方便面", "a jelly": "果冻", "a nut": "坚果", "a lollipop": "棒棒糖",
-    "a chewing gum": "口香糖", "a t-shirt": "T恤", "a pants": "裤子", "a coat": "外套",
-    "a sweater": "毛衣", "a dress": "连衣裙", "a sock": "袜子", "a underwear": "内衣",
-    "a shoe": "鞋子", "a hat": "帽子", "a scarf": "围巾", "a glove": "手套", "a towel": "毛巾",
-    "a bedsheet": "床单", "a quilt": "被子", "a pillow": "枕头", "a toothbrush": "牙刷",
-    "a toothpaste": "牙膏", "a shampoo bottle": "洗发水瓶", "a shower gel bottle": "沐浴露瓶",
-    "a facial cleanser": "洗面奶", "a laundry detergent bottle": "洗衣液瓶", "a soap": "肥皂",
-    "a toilet paper": "卫生纸", "a tissue box": "纸巾盒", "a mask": "口罩", "a plastic comb": "塑料梳子",
-    "a mirror": "镜子", "a laundry basket": "洗衣篮", "a plastic beverage bottle": "塑料瓶",
-    "a plastic bowl": "塑料碗", "a plastic box": "塑料盒", "a plastic bag": "塑料袋",
-    "a plastic bucket": "塑料桶", "a plastic hanger": "塑料衣架", "a plastic straw": "吸管",
-    "a plastic fork": "塑料叉子", "a plastic spoon": "塑料勺子", "a small cardboard box": "纸盒子",
-    "a cardboard box": "纸箱", "a newspaper": "报纸", "a magazine": "杂志", "a paper bag": "纸袋",
-    "a wrapping paper": "包装纸", "a paper cup": "纸杯", "a paper bowl": "纸碗", "a express box": "快递盒",
-    "a glass bottle": "玻璃瓶", "a glass cup": "玻璃杯", "a glass jar": "玻璃罐",
-    "a glass ceramic cup": "陶瓷杯", "a ceramic bowl": "陶瓷碗", "a ceramic plate": "陶瓷盘",
-    "a can": "易拉罐", "a iron nail": "铁钉", "a metal pot": "金属锅", "a aluminum foil": "铝箔纸",
-    "a metal key": "钥匙", "a stainless steel cup": "不锈钢杯", "a mobile phone": "手机",
-    "a computer mouse": "鼠标", "a keyboard": "键盘", "a charger": "充电器", "a data cable": "数据线",
-    "a earphone": "耳机", "a remote control": "遥控器", "a desk lamp": "台灯", "a fan": "电风扇",
-    "a power bank": "充电宝", "a battery": "电池", "a plug": "插头", "a plastic toy": "塑料玩具",
-    "a doll": "玩偶", "a lego brick": "乐高积木", "a ball": "球", "a badminton racket": "羽毛球拍",
-    "a basketball": "篮球", "a football": "足球", "a skipping rope": "跳绳", "a puzzle": "拼图",
-    "a toy car": "玩具车", "a cooking pot": "炒锅", "a chopsticks": "筷子", "a dish": "盘子",
-    "a spatula": "锅铲", "a bowl": "碗", "a kettle": "水壶", "a mop": "拖把", "a broom": "扫帚",
-    "a dustpan": "簸箕", "a expired medicine": "过期药品", "a cosmetic bottle": "化妆品瓶",
-    "a nail polish bottle": "指甲油瓶", "a fluorescent lamp": "荧光灯", "a thermometer": "温度计",
-    "a disposable lunch box": "一次性餐盒", "a disposable cup": "一次性杯子",
-    "a disposable chopsticks": "一次性筷子", "a wet wipe": "湿巾", "a plastic wrap": "保鲜膜",
+    # ===== 文具办公用品 =====
+    "a ballpoint pen with a plastic body and metal tip, common stationery": "笔",
+    "a thick book with a printed paper cover, used for reading or study": "书本",
+    "a small pink or white rectangular eraser for removing pencil marks": "橡皮",
+    "a flat rectangular sheet of clean white A4 printing or writing paper": "纸张",
+    "a spiral-bound or stapled paper notebook with lined pages for note-taking": "笔记本",
+    "a wooden yellow pencil with a graphite tip and pink eraser on the end": "铅笔",
+    "a flat transparent plastic ruler with measurement markings in centimeters": "尺子",
+    "a metal desktop stapler with a plastic base for binding sheets of paper": "订书机",
+    "a flat rectangular paper or plastic folder with tabs for organizing documents": "文件夹",
+    "a rectangular white or brown paper envelope for mailing letters": "信封",
+    "a stack of bright white A4 printer paper sheets in a ream": "打印纸",
+    "a small plastic correction tape dispenser with white tape inside": "修正带",
+
+    # ===== 水果蔬菜食物 =====
+    "a round red or green apple fruit with smooth shiny skin and a short stem": "苹果",
+    "a long curved yellow banana fruit with a thick peel and tiny brown spots": "香蕉",
+    "a round bright orange citrus fruit with slightly dimpled textured peel": "橙子",
+    "a large round green watermelon with dark green stripes and a thick rind": "西瓜",
+    "a cluster of small round purple or green grapes on a thin woody stem": "葡萄",
+    "a bright red heart-shaped strawberry fruit with tiny yellow seeds on the surface": "草莓",
+    "a round red ripe tomato vegetable with smooth glossy skin and a green calyx": "西红柿",
+    "a long slender dark green cucumber vegetable with bumpy textured skin": "黄瓜",
+    "a long tapered orange carrot root vegetable with thin hairlike rootlets": "胡萝卜",
+    "a round or oval brown-skinned potato tuber with small shallow indentations": "土豆",
+    "a round compact head of light green cabbage vegetable with layered leaves": "白菜",
+    "a bunch of dark green spinach leaves with thin stems and crinkly leaf texture": "菠菜",
+
+    # ===== 厨余/剩饭类 =====
+    "a bowl of leftover cooked white rice, slightly dry and clumped together": "剩饭",
+    "a plate of leftover mixed cooked dishes with visible vegetables and sauce": "剩菜",
+    "a hard whitish bone with some dried meat residue, leftover from a meal": "骨头",
+    "a cracked white or brown egg shell broken into small jagged pieces": "蛋壳",
+    "a pile of used dark wet tea leaves remaining at the bottom of a cup": "茶叶渣",
+    "a pile of dark brown wet used coffee grounds with a rich roasted aroma": "咖啡渣",
+    "a loaf or slice of soft baked bread with a golden brown crust": "面包",
+    "a bowl of long thin wheat noodles in a light-colored broth or sauce": "面条",
+    "a round flat golden-brown biscuit or cookie with a crumbly texture": "饼干",
+    "a thin crispy light yellow potato chip with curled edges and salted surface": "薯片",
+    "a square or rectangular piece of dark brown chocolate bar with a glossy surface": "巧克力",
+    "a small colorful round fruit-flavored candy wrapped in shiny cellophane": "糖果",
+
+    # ===== 零食/包装食品 =====
+    "a foam cup or paper bowl of curly instant noodles with seasoning powder": "方便面",
+    "a translucent jiggly fruit-flavored jelly dessert in a small plastic cup": "果冻",
+    "a handful of assorted hard-shelled nuts like walnuts almonds or peanuts": "坚果",
+    "a round colorful lollipop on a thin white stick wrapped in clear plastic": "棒棒糖",
+    "a small rectangular piece of pink or white chewing gum wrapped in foil paper": "口香糖",
+
+    # ===== 服装/纺织品 =====
+    "a short-sleeved cotton t-shirt with a round neckline, casual everyday wear": "T恤",
+    "a pair of long trousers or jeans pants made of denim or cotton fabric": "裤子",
+    "a thick padded winter coat or jacket with a front zipper and long sleeves": "外套",
+    "a knitted wool or cotton sweater with long sleeves and a crew neck": "毛衣",
+    "a sleeveless or short-sleeved women's dress made of lightweight flowing fabric": "连衣裙",
+    "a pair of short white or black cotton ankle socks with elastic cuffs": "袜子",
+    "a pair of cotton brief-style underwear or boxer shorts undergarment": "内衣",
+    "a pair of lace-up sneakers or leather shoes with rubber soles for walking": "鞋子",
+    "a fabric baseball cap or wide-brimmed sun hat worn on the head": "帽子",
+    "a long narrow rectangular knitted wool or acrylic scarf for keeping warm": "围巾",
+    "a pair of five-fingered fabric winter gloves with elastic wrist cuffs": "手套",
+
+    # ===== 日用品/卫浴 =====
+    "a rectangular absorbent cotton bath towel with a terrycloth textured surface": "毛巾",
+    "a large rectangular flat woven cotton bed sheet with printed patterns": "床单",
+    "a thick fluffy rectangular duvet or comforter quilt filled with cotton or down": "被子",
+    "a rectangular soft white or patterned bed pillow filled with cotton or memory foam": "枕头",
+    "a plastic-handled toothbrush with nylon bristles for cleaning teeth": "牙刷",
+    "a squeezable plastic tube of white toothpaste with a flip-top cap": "牙膏",
+    "a plastic pump bottle of liquid shampoo with a label and colored liquid inside": "洗发水瓶",
+    "a plastic bottle of shower gel or body wash with a push-down dispenser cap": "沐浴露瓶",
+    "a soft plastic tube of white facial cleanser cream with a screw cap": "洗面奶",
+    "a large plastic jug or bottle of blue or green liquid laundry detergent": "洗衣液瓶",
+    "a rectangular bar of white or beige soap with a smooth or slightly rough surface": "肥皂",
+    "a round white roll of soft textured toilet paper on a cardboard tube": "卫生纸",
+    "a rectangular cardboard tissue box with a slot opening and white tissues inside": "纸巾盒",
+    "a disposable blue or white three-ply face mask with ear loops": "口罩",
+    "a flat plastic hair comb with a row of evenly spaced teeth": "塑料梳子",
+    "a small round or oval glass mirror with a reflective surface and thin frame": "镜子",
+    "a rectangular plastic laundry basket with ventilation holes and handles": "洗衣篮",
+
+    # ===== 塑料制品 =====
+    "a transparent colorless plastic water or soda beverage bottle with a screw cap": "塑料瓶",
+    "a lightweight round plastic bowl for serving food, solid color": "塑料碗",
+    "a rectangular transparent or colored plastic storage container box with a snap lid": "塑料盒",
+    "a thin crinkly translucent white plastic shopping bag with handles": "塑料袋",
+    "a round cylindrical plastic bucket with a metal wire handle for carrying water": "塑料桶",
+    "a triangular-shaped plastic clothes hanger with a metal hook at the top": "塑料衣架",
+    "a thin cylindrical plastic drinking straw with a hollow center": "吸管",
+    "a lightweight white disposable plastic fork with four pointed tines": "塑料叉子",
+    "a lightweight white disposable plastic spoon with an oval bowl and short handle": "塑料勺子",
+
+    # ===== 纸制品 =====
+    "a small rectangular brown corrugated cardboard box with flaps, for shipping small items": "纸盒子",
+    "a large rectangular brown corrugated cardboard carton or shipping box with tape seals": "纸箱",
+    "a folded stack of black-and-white newsprint paper with printed articles and text": "报纸",
+    "a glossy colorful stapled paper magazine with a full-cover photograph on the front": "杂志",
+    "a brown kraft paper shopping bag with twisted paper handles and a flat bottom": "纸袋",
+    "a sheet of colorful decorative wrapping paper with patterns and a glossy finish": "包装纸",
+    "a disposable white single-use paper drinking cup with a rolled rim": "纸杯",
+    "a disposable paper soup or noodle bowl with a wax-coated water-resistant interior": "纸碗",
+    "a taped brown cardboard express delivery parcel box with a shipping label attached": "快递盒",
+
+    # ===== 玻璃/陶瓷 =====
+    "a transparent clear or green glass bottle with a narrow neck and a metal cap": "玻璃瓶",
+    "a transparent clear glass drinking cup with straight sides and a smooth rim": "玻璃杯",
+    "a cylindrical or square clear glass jar with a screw-on metal lid for food storage": "玻璃罐",
+    "a white glazed ceramic mug for drinking tea or coffee with a curved handle on one side": "陶瓷杯",
+    "a round shallow white glazed ceramic bowl for rice or soup with a smooth rim": "陶瓷碗",
+    "a flat round white glazed ceramic dinner plate with a slightly raised rim": "陶瓷盘",
+
+    # ===== 金属制品 =====
+    "a cylindrical red and silver aluminum soda or beer can with a pull-tab on top": "易拉罐",
+    "a thin small silver-colored iron nail with a sharp point and flat round head": "铁钉",
+    "a round deep cooking pot made of stainless steel or iron metal with two side handles": "金属锅",
+    "a thin shiny sheet of crinkled silver aluminum foil for wrapping food": "铝箔纸",
+    "a small silver-colored metal key with teeth cuts and a round head with a hole": "钥匙",
+    "a shiny silver polished stainless steel drinking cup with a smooth metallic surface": "不锈钢杯",
+
+    # ===== 电子产品 =====
+    "a rectangular touchscreen smartphone with a black glass front and thin metal frame": "手机",
+    "a small ergonomic black plastic computer mouse with a scroll wheel and two buttons": "鼠标",
+    "a rectangular black plastic computer keyboard with rows of square keycaps": "键盘",
+    "a white or black rectangular USB power adapter charger plug with a cable port": "充电器",
+    "a thin round USB data transfer and charging cable with metallic connector ends": "数据线",
+    "a pair of in-ear or over-ear audio earphones or headphones with a cable or wireless": "耳机",
+    "a rectangular black plastic TV or air conditioner remote control with many buttons": "遥控器",
+    "a small adjustable LED desk lamp with a flexible neck and a circular light head": "台灯",
+    "a round electric standing or desk fan with rotating plastic blades and a mesh guard": "电风扇",
+    "a rectangular portable USB power bank battery pack with LED indicator lights": "充电宝",
+    "a cylindrical AA or AAA dry cell battery with a metallic casing and raised positive terminal": "电池",
+    "a two-prong or three-prong black or white electrical wall plug with attached wire": "插头",
+
+    # ===== 玩具/运动用品 =====
+    "a colorful molded plastic children's toy in various shapes like cars or animals": "塑料玩具",
+    "a soft fabric stuffed doll or plush toy animal with embroidered facial features": "玩偶",
+    "a small rectangular colorful interlocking plastic Lego building brick with raised studs": "乐高积木",
+    "a round inflated rubber sports ball with visible seams and a textured surface": "球",
+    "a lightweight badminton racket with a thin metal shaft and mesh string head": "羽毛球拍",
+    "an orange rubber basketball with black seam lines and a pebbled textured surface": "篮球",
+    "a black-and-white pentagon or hexagon patterned leather or synthetic soccer football": "足球",
+    "a plastic-handled jump rope or skipping rope with a thin braided nylon cord": "跳绳",
+    "a flat cardboard jigsaw puzzle with many small interlocking cut pieces forming a picture": "拼图",
+    "a small die-cast metal or plastic toy car with four rolling wheels and painted body": "玩具车",
+
+    # ===== 厨具/餐具 =====
+    "a round black or silver metal wok or frying pan cooking pot with a long handle": "炒锅",
+    "a pair of long thin wooden or bamboo chopsticks used as eating utensils": "筷子",
+    "a round shallow ceramic white serving dish or plate for holding main course food": "盘子",
+    "a flat metal cooking spatula or turner with a wide blade and a long handle": "锅铲",
+    "a small deep round ceramic rice bowl for holding soup or individual servings": "碗",
+    "a metal or plastic water kettle or electric hot water pot with a spout and handle": "水壶",
+
+    # ===== 清洁/家居 =====
+    "a long-handled floor mop with a flat rectangular microfiber cloth cleaning head": "拖把",
+    "a long-handled household broom with a bundle of natural or plastic bristles at the end": "扫帚",
+    "a small flat plastic dustpan with a rubber edge and a short upright handle": "簸箕",
+
+    # ===== 有害垃圾 =====
+    "a cardboard box or plastic bottle of expired prescription medicine tablets or capsules": "过期药品",
+    "a small glass or plastic cosmetic cream jar or lotion bottle for skincare makeup": "化妆品瓶",
+    "a small glass bottle of colored nail polish with a brush applicator cap and shiny liquid inside": "指甲油瓶",
+    "a long thin white compact fluorescent lamp tube with a rectangular pin base at each end": "荧光灯",
+    "a glass mercury thermometer with a thin capillary tube and a silver bulb at one end": "温度计",
+
+    # ===== 一次性用品/其他垃圾 =====
+    "a rectangular white foam or clear plastic disposable takeout food container with a lid": "一次性餐盒",
+    "a white or translucent thin plastic disposable drinking cup for single use": "一次性杯子",
+    "a pair of thin lightweight wooden disposable chopsticks still connected at the end": "一次性筷子",
+    "a small white moist single-use wet wipe or cleansing tissue pulled from a packet": "湿巾",
+    "a roll of thin transparent stretchy plastic cling wrap for covering food containers": "保鲜膜",
 }
 
 TEXT_PROMPTS = list(LABEL_MAP.keys())
@@ -234,7 +366,7 @@ _metrics_lock = threading.Lock()  # runtime_metrics
 _trigger_lock = threading.Lock()  # trigger_config
 server_start_time = time.time()
 
-HARDWARE_STALE_SECONDS = 35  # ESP32 每 30s 发心跳，超 35s 未收到视为离线
+HARDWARE_STALE_SECONDS = 60  # ESP32 每 30s 发心跳，超 60s 未收到视为离线（给予双倍容忍，应对偶尔的单次包丢失）
 
 hardware_state = {
     "online": False,
@@ -248,7 +380,10 @@ hardware_state = {
 _hardware_was_online = False  # 跟踪状态变化，用于 SSE 推送
 
 def _update_hardware_online():
-    """根据 last_seen 更新时间戳，返回 (当前online, 是否变化)"""
+    """根据 last_seen 更新时间戳，返回 (当前online, 是否变化)
+
+    Thread-safe: _hardware_was_online is protected by _hw_lock.
+    """
     global _hardware_was_online
     now = time.time()
     with _hw_lock:
@@ -268,7 +403,7 @@ HISTORY_MAX = 50
 server_history = deque(maxlen=HISTORY_MAX)
 active_classify_model = "clip"  # 当前分类模型: clip / doubao / qwen / custom
 _active_model_lock = threading.Lock()
-INFERENCE_WORKERS = max(2, os.cpu_count() or 4)
+INFERENCE_WORKERS = max(2, min(os.cpu_count() or 4, 8))  # 上限 8，避免 16 核机器创建过多线程
 inference_executor = ThreadPoolExecutor(max_workers=INFERENCE_WORKERS, thread_name_prefix="inference")
 runtime_metrics = {
     "requests_total": 0,
@@ -279,7 +414,7 @@ runtime_metrics = {
 }
 
 trigger_config = {
-    "mode": "button",           # "button" | "distance"
+    "mode": "distance",           # "distance"
     "distance_min": 30,         # mm, 最小触发距离
     "distance_max": 300,        # mm, 最大触发距离
     "cooldown_ms": 2000,        # ms, 触发缓冲时间 (物体需稳定在范围内的时间)
@@ -330,7 +465,7 @@ def _make_thumbnail(image_data: bytes, max_edge: int = 320) -> bytes:
         img = Image.open(io.BytesIO(image_data)).convert("RGB")
         img = 缩放到最大边(img, max_edge)
         buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=60)
+        img.save(buf, format="JPEG", quality=95)
         return buf.getvalue()
     except Exception:
         return None
@@ -380,7 +515,6 @@ def _mark_hardware_online(ip_address: str = "", device_id: str = "ESP32-S3", fir
             hardware_state["capture_count"] += 1
             hardware_state["last_capture"] = datetime.now(timezone.utc).isoformat()
 
-
 async def _run_blocking(fn, *args):
     loop = asyncio.get_running_loop()
     return await loop.run_in_executor(inference_executor, lambda: fn(*args))
@@ -423,7 +557,7 @@ async def lifespan(app: FastAPI):
     _sse_queues.clear()
 
 
-app = FastAPI(title="物品识别API", version="5.0.0", lifespan=lifespan)
+app = FastAPI(title="物品识别API", version="5.3.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
@@ -474,7 +608,7 @@ async def request_observability(request: Request, call_next):
 
 # ===================== 核心加速（无编译，100%兼容Windows） =====================
 device = "cpu"
-torch.set_num_threads(2)
+torch.set_num_threads(2)              # 限制 PyTorch 内部线程数，避免与 ThreadPoolExecutor 争抢
 torch.set_num_interop_threads(1)
 torch.set_grad_enabled(False)
 
@@ -846,7 +980,7 @@ async def set_active_model(body: ActiveModelBody):
 # ===================== 触发配置接口 =====================
 
 class TriggerConfigBody(BaseModel):
-    mode: str = "button"              # "button" | "distance"
+    mode: str = "distance"              # "distance"
     distance_min: int = 30            # mm
     distance_max: int = 300           # mm
     cooldown_ms: int = 2000           # ms
@@ -861,8 +995,8 @@ async def get_trigger_config():
 
 @app.post("/trigger/config")
 async def set_trigger_config(body: TriggerConfigBody):
-    if body.mode not in ("button", "distance"):
-        raise HTTPException(status_code=400, detail="mode must be 'button' or 'distance'")
+    if body.mode not in ("distance",):
+        raise HTTPException(status_code=400, detail="mode must be 'distance'")
     if body.distance_min < 0 or body.distance_max > 2000:
         raise HTTPException(status_code=400, detail="distance range must be 0-2000 mm")
     if body.distance_min >= body.distance_max:
@@ -1225,4 +1359,6 @@ if os.path.exists(FRONTEND_DIR):
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8085)
+    uvicorn.run(app, host="0.0.0.0", port=8085,
+                timeout_keep_alive=30,     # HTTP keep-alive 30s: ESP32 心跳间隔内可复用，但不超过心跳周期
+                backlog=256)               # TCP accept 队列：accept 并发硬件 + web 前端
