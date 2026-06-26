@@ -116,8 +116,15 @@ LABEL_MAP = {
     "a photo of a mirror": "镜子",
     "a photo of a plastic laundry basket": "洗衣篮",
 
-    # ===== 塑料制品 =====
-    "a photo of a plastic bottle, container or any plastic item": "塑料瓶",
+    # ===== 塑料制品（多条具体描述→同一中文标签） =====
+    "a photo of a clear plastic or PET beverage bottle": "塑料瓶",
+    "a photo of a plastic container, storage box or bin": "塑料瓶",
+    "a photo of a thin plastic shopping bag": "塑料瓶",
+    "a photo of a plastic bowl or cup, disposable tableware": "塑料瓶",
+    "a photo of a plastic clothes hanger": "塑料瓶",
+    "a photo of a plastic bucket or pail": "塑料瓶",
+    "a photo of plastic cutlery, fork or spoon": "塑料瓶",
+    "a photo of a drinking straw made of plastic": "塑料瓶",
 
     # ===== 纸制品 =====
     "a photo of a small cardboard box": "纸盒子",
@@ -146,8 +153,21 @@ LABEL_MAP = {
     "a photo of a metal key": "钥匙",
     "a photo of a stainless steel cup": "不锈钢杯",
 
-    # ===== 电子产品 =====
-    "a photo of any electronic device, gadget or accessory": "电子产品",
+    # ===== 电子产品（多条具体描述→同一中文标签） =====
+    "a photo of a smartphone, mobile phone": "电子产品",
+    "a photo of a computer mouse": "电子产品",
+    "a photo of a computer keyboard": "电子产品",
+    "a photo of a charger plug or power adapter": "电子产品",
+    "a photo of a USB cable or charging cable": "电子产品",
+    "a photo of earphones or headphones": "电子产品",
+    "a photo of a remote control": "电子产品",
+    "a photo of a desk lamp": "电子产品",
+    "a photo of an electric fan": "电子产品",
+    "a photo of a portable power bank": "电子产品",
+    "a photo of a battery cell, AA or AAA": "电子产品",
+    "a photo of an electrical plug with prongs": "电子产品",
+    "a photo of a tablet or iPad": "电子产品",
+    "a photo of a laptop computer": "电子产品",
 
     # ===== 玩具/运动用品 =====
     "a photo of a plastic toy": "塑料玩具",
@@ -567,6 +587,8 @@ text_inputs = None
 _text_features = None
 _logit_scale = None
 _CLASSIFY_RESULTS = []
+_CLASSIFY_RESULTS_ZH = []      # Chinese label per prompt index (for aggregation)
+_CLASSIFY_RESULTS_BY_ZH = {}   # first result dict per unique Chinese label
 
 # YOLO — loaded in lifespan via _load_yolo() (keeps lazy-load fallback)
 YOLO_MODEL_PATH = os.path.join(os.path.dirname(__file__), "exp-22.pt")
@@ -578,6 +600,7 @@ _models_ready = False
 def _load_clip_and_encode():
     """Load CLIP model, processor, pre-compute text features and classify results (blocking)."""
     global model, processor, text_inputs, _text_features, _logit_scale, _CLASSIFY_RESULTS
+    global _CLASSIFY_RESULTS_ZH, _CLASSIFY_RESULTS_BY_ZH
     logger.info("正在加载CLIP模型...")
     if os.path.exists(os.path.join(MODEL_DIR, "config.json")):
         model = CLIPModel.from_pretrained(MODEL_DIR).to(device).eval()
@@ -604,13 +627,19 @@ def _load_clip_and_encode():
 
     # P2-5: Pre-compute classify result dicts (one-time cost)
     _CLASSIFY_RESULTS = []
+    _CLASSIFY_RESULTS_ZH = []
+    _CLASSIFY_RESULTS_BY_ZH = {}
     for prompt in TEXT_PROMPTS:
         zh = LABEL_MAP[prompt]
         cat, cat_zh = 获取垃圾分类(zh)
-        _CLASSIFY_RESULTS.append({
+        entry = {  # use first prompt per label for display
             "item_label": prompt, "item_label_zh": zh,
             "waste_category": cat, "waste_category_zh": cat_zh,
-        })
+        }
+        _CLASSIFY_RESULTS.append(entry)
+        _CLASSIFY_RESULTS_ZH.append(zh)
+        if zh not in _CLASSIFY_RESULTS_BY_ZH:
+            _CLASSIFY_RESULTS_BY_ZH[zh] = entry
 
     logger.info("✅ 本地CLIP模型加载成功！")
 
@@ -667,35 +696,56 @@ def _classify_clip(image_data: bytes):
         img_feats = img_feats / img_feats.norm(dim=-1, keepdim=True)
         logits_per_image = (img_feats @ _text_features.T) * _logit_scale
 
-    probs = logits_per_image.softmax(dim=1).squeeze().cpu().numpy()
-    sorted_idx = np.argsort(probs)[::-1]
+    # logits: higher = better match (pre-softmax similarity × logit_scale)
+    logits = logits_per_image.squeeze().cpu().numpy()
 
-    # Confidence threshold — if top-1 is too low, return uncertain
-    if probs[sorted_idx[0]] < 0.25:
+    # Aggregate by Chinese label: take the MAX logit across all prompts for the same label
+    zh_logits = {}
+    zh_best_idx = {}   # track which prompt index gave the max logit per label
+    for i, zh in enumerate(_CLASSIFY_RESULTS_ZH):
+        if zh not in zh_logits or logits[i] > zh_logits[zh]:
+            zh_logits[zh] = logits[i]
+            zh_best_idx[zh] = i
+    zh_items = list(zh_logits.items())
+    zh_labels = [item[0] for item in zh_items]
+    zh_logit_vals = np.array([item[1] for item in zh_items])
+
+    # Softmax over per-label max logits
+    zh_probs = np.exp(zh_logit_vals - zh_logit_vals.max())
+    zh_probs = zh_probs / zh_probs.sum()
+    sorted_idx = np.argsort(zh_probs)[::-1]
+
+    best_zh = zh_labels[sorted_idx[0]]
+    best_conf = float(zh_probs[sorted_idx[0]])
+
+    # Confidence threshold
+    if best_conf < 0.25:
         return {
             "waste_category": "unknown",
             "waste_category_zh": "无法识别",
             "item_label": "unclear object",
             "item_label_zh": "无法识别",
-            "confidence": float(probs[sorted_idx[0]]),
+            "confidence": best_conf,
             "tip": "请将物品放在光线充足处重试",
             "top3": [],
             "model_used": "clip"
         }
 
-    # P2-5: Use pre-computed _CLASSIFY_RESULTS for index lookups
+    # Reuse pre-computed result dict; update item_label with best-matching prompt
+    best_result = dict(_CLASSIFY_RESULTS_BY_ZH[best_zh])
+    best_result["item_label"] = TEXT_PROMPTS[zh_best_idx[best_zh]]
     top3_list = [
-        {**r, "confidence": float(probs[r_i])}
-        for r_i, r in zip(sorted_idx[:3], [_CLASSIFY_RESULTS[i] for i in sorted_idx[:3]])
+        dict(_CLASSIFY_RESULTS_BY_ZH[zh_labels[i]], confidence=float(zh_probs[i]),
+             item_label=TEXT_PROMPTS[zh_best_idx[zh_labels[i]]])
+        for i in sorted_idx[:3]
     ]
 
-    best = _CLASSIFY_RESULTS[sorted_idx[0]]
     return {
-        "waste_category": best["waste_category"],
-        "waste_category_zh": best["waste_category_zh"],
-        "item_label": best["item_label"],
-        "item_label_zh": best["item_label_zh"],
-        "confidence": float(probs[sorted_idx[0]]),
+        "waste_category": best_result["waste_category"],
+        "waste_category_zh": best_result["waste_category_zh"],
+        "item_label": best_result["item_label"],
+        "item_label_zh": best_result["item_label_zh"],
+        "confidence": best_conf,
         "tip": "请将垃圾投放到对应类别的收集容器中",
         "top3": top3_list,
         "model_used": "clip"
