@@ -1,37 +1,30 @@
 const API_BASE = ''
 
 async function request(path, options = {}) {
-  const { timeoutMs = 20000, ...fetchOptions } = options
-  const url = `${API_BASE}${path}`
+  const { timeoutMs = 10000, ...fetchOptions } = options
   const controller = new AbortController()
   const timer = setTimeout(() => controller.abort(), timeoutMs)
   try {
-    const res = await fetch(url, { ...fetchOptions, signal: controller.signal }).finally(() => clearTimeout(timer))
+    const res = await fetch(`${API_BASE}${path}`, { ...fetchOptions, signal: controller.signal })
     if (!res.ok) {
       const detail = await res.json().catch(() => ({}))
       throw new Error(detail.detail || `Server returned ${res.status}`)
     }
-    const data = await res.json()
-    const requestId = res.headers.get('x-request-id')
-    if (requestId && data && typeof data === 'object') {
-      data._request_id = requestId
-    }
-    return data
+    return res.json()
   } catch (err) {
     clearTimeout(timer)
-    if (err.name === 'AbortError') {
-      throw new Error('请求超时，请检查网络连接或后端服务状态')
-    }
+    if (err.name === 'AbortError') throw new Error('请求超时')
     throw err
+  } finally {
+    clearTimeout(timer)
   }
 }
 
-export function checkHealth() {
+export async function checkHealth() {
   const start = performance.now()
-  return request('/health').then(data => ({
-    ...data,
-    latency: Math.round(performance.now() - start)
-  }))
+  const res = await fetch(`${API_BASE}/health`, { signal: AbortSignal.timeout(5000) })
+  const data = await res.json()
+  return { ...data, latency: Math.round(performance.now() - start) }
 }
 
 export function getModels() {

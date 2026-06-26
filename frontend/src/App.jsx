@@ -62,7 +62,6 @@ export default function App() {
   const latency = health?.latency
   const captures = hwStatus?.capture_count || 0
   const activeModel = health?.active_model || 'clip'
-  const triggerMode = health?.trigger_config?.mode || 'distance'
   const queueDepth = metrics?.queue_depth ?? 0
   const errorRatePct = metrics?.error_rate !== undefined ? (metrics.error_rate * 100).toFixed(1) : '—'
 

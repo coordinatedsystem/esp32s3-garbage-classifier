@@ -68,7 +68,7 @@ Adafruit_VL53L0X tof = Adafruit_VL53L0X();
 // ==============================
 // 参数
 // ==============================
-#define HTTP_TIMEOUT_MS  15000
+#define HTTP_TIMEOUT_MS  12000
 #define FIRMWARE_VERSION "5.3.0"
 #define HEARTBEAT_MS     30000
 #define CONFIG_FETCH_MS  30000
@@ -450,7 +450,7 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
     }
 
     WiFiClient client;
-    client.setTimeout(8000);  // socket 单次操作超时
+    client.setTimeout(3000);  // socket 单次操作超时 (LAN短)
     client.stop();            // 清理残留 socket
 
     // 连接
@@ -971,6 +971,8 @@ void loop() {
 
         bar("Auto capture!");
         captureAndClassify();
+        postCaptureUntil = millis() + 5000;
+        lastCountdownSec = -1;
         waitingDistanceClear = true;
         distanceClearDeadline = now + 10000;
 

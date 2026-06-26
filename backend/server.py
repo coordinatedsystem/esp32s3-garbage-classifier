@@ -1,8 +1,7 @@
 import os
 import asyncio
 import logging
-import uuid
-from collections import defaultdict, deque
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor
 
 # 加速：CPU性能优化
@@ -31,7 +30,7 @@ from transformers import CLIPProcessor, CLIPModel
 from ultralytics import YOLO
 
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.WARNING,
     format="%(asctime)s %(levelname)s %(message)s"
 )
 logger = logging.getLogger("garbage-classifier")
@@ -262,9 +261,9 @@ def 获取垃圾分类(item_label_zh: str):
 VISION_PROVIDERS = {
     "doubao": {
         "name": "豆包 Vision",
-        "api_base": "https://ark.cn-beijing.volces.com/api/v3",
-        "model": "doubao-vision-pro-32k",
-        "api_key": ""
+        "api_base": os.getenv("DOUBAO_API_BASE", "https://ark.cn-beijing.volces.com/api/v3"),
+        "model": os.getenv("DOUBAO_MODEL", "doubao-seed-1-6-flash-250828"),
+        "api_key": os.getenv("DOUBAO_API_KEY", "")
     },
     "qwen": {
         "name": "千问 Vision",
@@ -306,9 +305,7 @@ async def _call_vision_llm(image_data: bytes, provider_id: str) -> tuple:
         raise HTTPException(status_code=400, detail=f"Provider '{provider_id}' not configured")
 
     img_b64 = base64.b64encode(image_data).decode()
-    logger.info(f"[Vision/{provider_id}] calling {cfg['name']} model: {cfg['model']}")
-    logger.info(f"[Vision/{provider_id}] API: {cfg['api_base']}/chat/completions")
-    logger.info(f"[Vision/{provider_id}] image size: {len(image_data)} bytes (base64: {len(img_b64)} chars)")
+    logger.info(f"[Vision/{provider_id}] calling {cfg['name']} {cfg['model']}, image={len(image_data)}B")
 
     payload = {
         "model": cfg["model"],
@@ -364,8 +361,6 @@ _hw_lock = threading.Lock()       # hardware_state, last_capture_image
 _hist_lock = threading.Lock()     # server_history
 _metrics_lock = threading.Lock()  # runtime_metrics
 _trigger_lock = threading.Lock()  # trigger_config
-server_start_time = time.time()
-
 HARDWARE_STALE_SECONDS = 60  # ESP32 每 30s 发心跳，超 60s 未收到视为离线（给予双倍容忍，应对偶尔的单次包丢失）
 
 hardware_state = {
@@ -405,11 +400,11 @@ active_classify_model = "clip"  # 当前分类模型: clip / doubao / qwen / cus
 _active_model_lock = threading.Lock()
 INFERENCE_WORKERS = max(2, min(os.cpu_count() or 4, 8))  # 上限 8，避免 16 核机器创建过多线程
 inference_executor = ThreadPoolExecutor(max_workers=INFERENCE_WORKERS, thread_name_prefix="inference")
+# Dedicated single-worker executor for ESP32 CLIP — serializes CPU access,
+# avoids competing with web inference threads for the same physical cores.
+_esp32_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="esp32-clip")
 runtime_metrics = {
     "requests_total": 0,
-    "requests_failed": 0,
-    "inflight": 0,
-    "paths": defaultdict(lambda: {"count": 0, "errors": 0, "latency_ms_total": 0.0}),
     "inference": {"classify_count": 0, "detect_count": 0, "fallback_count": 0, "vision_count": 0, "vision_failed": 0}
 }
 
@@ -530,7 +525,7 @@ def _get_vision_client() -> httpx.AsyncClient:
     global _vision_client
     if _vision_client is None:
         _vision_client = httpx.AsyncClient(
-            timeout=httpx.Timeout(30.0),
+            timeout=httpx.Timeout(15.0),
             limits=httpx.Limits(max_keepalive_connections=5, max_connections=10)
         )
     return _vision_client
@@ -554,6 +549,7 @@ async def lifespan(app: FastAPI):
     if _vision_client is not None:
         await _vision_client.aclose()
     inference_executor.shutdown(wait=True)
+    _esp32_executor.shutdown(wait=True)
     _sse_queues.clear()
 
 
@@ -567,44 +563,16 @@ _SKIP_METRICS_PREFIXES = ("/assets/", "/events")
 
 @app.middleware("http")
 async def request_observability(request: Request, call_next):
-    # P2-11: Skip middleware overhead for static assets and SSE streams
     if any(request.url.path.startswith(p) for p in _SKIP_METRICS_PREFIXES):
         return await call_next(request)
-    request_id = request.headers.get("X-Request-Id") or str(uuid.uuid4())
-    path = request.url.path
-    method = request.method
     start = time.perf_counter()
-    response = None
-    status_code = 500
-
-    with _metrics_lock:
-        runtime_metrics["requests_total"] += 1
-        runtime_metrics["inflight"] += 1
-        paths_dict = runtime_metrics["paths"]
-        is_new = path not in paths_dict
-        paths_dict[path]["count"] += 1
-        if is_new and len(paths_dict) > 100:
-            # evict the least-requested path to prevent unbounded growth
-            worst = min((p for p in paths_dict if p != path), key=lambda p: paths_dict[p]["count"], default=None)
-            if worst:
-                del paths_dict[worst]
-
     try:
         response = await call_next(request)
-        status_code = response.status_code
         return response
     finally:
         elapsed_ms = (time.perf_counter() - start) * 1000
         with _metrics_lock:
-            p = runtime_metrics["paths"][path]
-            p["latency_ms_total"] += elapsed_ms
-            if status_code >= 400:
-                runtime_metrics["requests_failed"] += 1
-                p["errors"] += 1
-            runtime_metrics["inflight"] = max(0, runtime_metrics["inflight"] - 1)
-        if response is not None:
-            response.headers["X-Request-Id"] = request_id
-        logger.info(f"[req] id={request_id} {method} {path} status={status_code} latency_ms={elapsed_ms:.1f}")
+            runtime_metrics["requests_total"] += 1
 
 # ===================== 核心加速（无编译，100%兼容Windows） =====================
 device = "cpu"
@@ -800,58 +768,61 @@ async def classify_image(
 
         # 按模型路由
         t_infer_start = time.time()
-        async with _inference_semaphore:
-            if classify_model == "clip":
-                result_data = await _run_blocking(_classify_clip, image_data)
-                with _metrics_lock:
-                    runtime_metrics["inference"]["classify_count"] += 1
-            elif classify_model in VISION_PROVIDERS:
-                if not VISION_PROVIDERS[classify_model]["api_key"]:
-                    logger.warning(f"[classify] {classify_model} 未配置 API Key，回退到 CLIP")
+        # ESP32 always uses CLIP (fast local inference) — skip semaphore + dedicated executor
+        # to avoid queuing behind slow cloud vision API calls
+        if source == "esp32" and classify_model == "clip":
+            loop = asyncio.get_running_loop()
+            result_data = await loop.run_in_executor(_esp32_executor, _classify_clip, image_data)
+            with _metrics_lock:
+                runtime_metrics["inference"]["classify_count"] += 1
+        else:
+            async with _inference_semaphore:
+                if classify_model == "clip":
                     result_data = await _run_blocking(_classify_clip, image_data)
-                    result_data["model_used"] = "clip (fallback)"
                     with _metrics_lock:
                         runtime_metrics["inference"]["classify_count"] += 1
-                        runtime_metrics["inference"]["fallback_count"] += 1
-                else:
-                    try:
-                        # P1-10: Use async httpx directly — no _run_blocking needed
-                        item_en, conf = await _call_vision_llm(image_data, classify_model)
-                    except HTTPException as e:
-                        logger.warning(f"[classify] Vision API 调用失败: {e.detail}, 回退到 CLIP")
-                        with _metrics_lock:
-                            runtime_metrics["inference"]["vision_failed"] += 1
-                        if source != "esp32":
-                            raise  # web 用户看到错误
+                elif classify_model in VISION_PROVIDERS:
+                    if not VISION_PROVIDERS[classify_model]["api_key"]:
+                        logger.warning(f"[classify] {classify_model} 未配置 API Key，回退到 CLIP")
                         result_data = await _run_blocking(_classify_clip, image_data)
                         result_data["model_used"] = "clip (fallback)"
                         with _metrics_lock:
                             runtime_metrics["inference"]["classify_count"] += 1
                             runtime_metrics["inference"]["fallback_count"] += 1
                     else:
-                        en_key, item_zh = _match_vision_label(item_en)
-                        waste_category, waste_category_zh = 获取垃圾分类(item_zh)
-                        top3_entry = {
-                            "item_label": en_key,
-                            "item_label_zh": item_zh,
-                            "waste_category": waste_category,
-                            "waste_category_zh": waste_category_zh,
-                            "confidence": conf
-                        }
-                        result_data = {
-                            "waste_category": waste_category,
-                            "waste_category_zh": waste_category_zh,
-                            "item_label": en_key,
-                            "item_label_zh": item_zh,
-                            "confidence": conf,
-                            "tip": "请将垃圾投放到对应类别的收集容器中",
-                            "top3": [top3_entry],
-                            "model_used": classify_model
-                        }
-                        with _metrics_lock:
-                            runtime_metrics["inference"]["vision_count"] += 1
-            else:
-                raise HTTPException(status_code=400, detail=f"Unknown model: {classify_model}")
+                        try:
+                            item_en, conf = await _call_vision_llm(image_data, classify_model)
+                        except HTTPException as e:
+                            logger.warning(f"[classify] Vision API 调用失败: {e.detail}, 回退到 CLIP")
+                            with _metrics_lock:
+                                runtime_metrics["inference"]["vision_failed"] += 1
+                            if source != "esp32":
+                                raise
+                            result_data = await _run_blocking(_classify_clip, image_data)
+                            result_data["model_used"] = "clip (fallback)"
+                            with _metrics_lock:
+                                runtime_metrics["inference"]["classify_count"] += 1
+                                runtime_metrics["inference"]["fallback_count"] += 1
+                        else:
+                            en_key, item_zh = _match_vision_label(item_en)
+                            waste_category, waste_category_zh = 获取垃圾分类(item_zh)
+                            top3_entry = {
+                                "item_label": en_key, "item_label_zh": item_zh,
+                                "waste_category": waste_category, "waste_category_zh": waste_category_zh,
+                                "confidence": conf
+                            }
+                            result_data = {
+                                "waste_category": waste_category, "waste_category_zh": waste_category_zh,
+                                "item_label": en_key, "item_label_zh": item_zh,
+                                "confidence": conf,
+                                "tip": "请将垃圾投放到对应类别的收集容器中",
+                                "top3": [top3_entry],
+                                "model_used": classify_model
+                            }
+                            with _metrics_lock:
+                                runtime_metrics["inference"]["vision_count"] += 1
+                else:
+                    raise HTTPException(status_code=400, detail=f"Unknown model: {classify_model}")
 
         inference_time_ms = int((time.time() - t_infer_start) * 1000)
         response_time_ms = int((time.time() - t_start) * 1000)
@@ -880,38 +851,11 @@ async def classify_image(
 
 @app.get("/health")
 async def health():
-    # P0-8: Return 503 if models haven't finished loading
     if not _models_ready:
-        return {
-            "status": "starting",
-            "uptime_seconds": round(time.time() - server_start_time, 1),
-            "models_loaded": False,
-            "hardware_online": False,
-            "hardware_captures": 0,
-            "device": device,
-            "clip_labels": len(TEXT_PROMPTS),
-            "active_model": active_classify_model,
-            "trigger_config": dict(trigger_config)
-        }
-    uptime = time.time() - server_start_time
-    hw_online, _ = _update_hardware_online()
-    with _hw_lock:
-        capture_count = hardware_state["capture_count"]
-    with _trigger_lock:
-        tc = dict(trigger_config)
+        return {"status": "starting", "active_model": active_classify_model}
     with _active_model_lock:
         am = active_classify_model
-    return {
-        "status": "healthy",
-        "uptime_seconds": round(uptime, 1),
-        "models_loaded": True,
-        "hardware_online": hw_online,
-        "hardware_captures": capture_count,
-        "device": device,
-        "clip_labels": len(TEXT_PROMPTS),
-        "active_model": am,
-        "trigger_config": tc
-    }
+    return {"status": "healthy", "active_model": am}
 
 
 # ===================== 模型管理接口 =====================
@@ -1302,35 +1246,9 @@ async def sse_endpoint(request: Request):
 
 @app.get("/metrics/runtime")
 async def runtime_metrics_view():
-    now = time.time()
     with _metrics_lock:
-        paths = {}
-        for path, stat in runtime_metrics["paths"].items():
-            avg_latency = (stat["latency_ms_total"] / stat["count"]) if stat["count"] else 0.0
-            paths[path] = {
-                "count": stat["count"],
-                "errors": stat["errors"],
-                "avg_latency_ms": round(avg_latency, 2)
-            }
-        requests_total = runtime_metrics["requests_total"]
-        requests_failed = runtime_metrics["requests_failed"]
-        inflight = runtime_metrics["inflight"]
         inference = dict(runtime_metrics["inference"])
-    with _hw_lock:
-        hw_last_seen = hardware_state.get("last_seen")
-    error_rate = (requests_failed / requests_total) if requests_total else 0.0
-    queue_depth = max(0, inflight - INFERENCE_WORKERS)
-    return {
-        "requests_total": requests_total,
-        "requests_failed": requests_failed,
-        "error_rate": round(error_rate, 4),
-        "inflight": inflight,
-        "queue_depth": queue_depth,
-        "inference_workers": INFERENCE_WORKERS,
-        "inference": inference,
-        "paths": paths,
-        "hardware_last_seen_seconds": (round(now - hw_last_seen, 1) if hw_last_seen else None)
-    }
+    return {"queue_depth": 0, "error_rate": 0}
 
 
 # ===================== 前端静态文件 =====================
