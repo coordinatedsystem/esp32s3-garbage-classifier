@@ -11,21 +11,17 @@ import numpy as np
 # 左：CLIP模型用【最优英文提示词】（覆盖大类特征，识别率拉满）
 # 右：用户/老师看到的【中文大类名称】（简洁直观）
 LABEL_MAP = {
-    # 文具大类
-    "a ballpoint pen with a plastic body and metal tip, common stationery": "笔",
-    "a thick book with a printed paper cover, used for reading or study": "书本",
-    "a small pink or white rectangular eraser for removing pencil marks": "橡皮",
-    "a flat rectangular sheet of clean white A4 printing or writing paper": "纸张",
-    "a spiral-bound or stapled paper notebook with lined pages for note-taking": "笔记本",
-    # 日常容器/垃圾大类
-    "a transparent colorless plastic water or soda beverage bottle with a screw cap": "塑料瓶",
-    "a transparent clear glass or white glazed ceramic drinking cup with a smooth rim": "杯子",
-    # 电子/日常物品
-    "a rectangular touchscreen smartphone with a black glass front and thin metal frame": "手机",
-    "a small ergonomic black plastic computer mouse with a scroll wheel and two buttons": "鼠标",
-    "a pair of eyeglasses or spectacles with a dark plastic frame and two clear lenses": "眼镜",
-    # 纸制品
-    "a small rectangular brown corrugated cardboard box with flaps, for shipping small items": "纸盒子"
+    "a photo of a pen or pencil, writing instrument": "笔",
+    "a photo of a book with a cover": "书本",
+    "a photo of an eraser": "橡皮",
+    "a photo of a sheet of paper, blank": "纸张",
+    "a photo of a notebook": "笔记本",
+    "a photo of a clear plastic bottle": "塑料瓶",
+    "a photo of a glass drinking cup": "杯子",
+    "a photo of a smartphone": "手机",
+    "a photo of a computer mouse": "鼠标",
+    "a photo of a pair of eyeglasses": "眼镜",
+    "a photo of a small cardboard box": "纸盒子"
 }
 
 # 自动提取提示词和中文标签
