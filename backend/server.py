@@ -117,14 +117,7 @@ LABEL_MAP = {
     "a photo of a plastic laundry basket": "洗衣篮",
 
     # ===== 塑料制品 =====
-    "a photo of a clear plastic bottle": "塑料瓶",
-    "a photo of a plastic bowl": "塑料碗",
-    "a photo of a plastic storage box": "塑料盒",
-    "a photo of a plastic shopping bag": "塑料袋",
-    "a photo of a plastic bucket": "塑料桶",
-    "a photo of a plastic clothes hanger": "塑料衣架",
-    "a photo of a drinking straw": "吸管",
-    "a photo of plastic disposable utensils": "塑料餐具",
+    "a photo of a plastic bottle, container or any plastic item": "塑料瓶",
 
     # ===== 纸制品 =====
     "a photo of a small cardboard box": "纸盒子",
@@ -154,18 +147,7 @@ LABEL_MAP = {
     "a photo of a stainless steel cup": "不锈钢杯",
 
     # ===== 电子产品 =====
-    "a photo of a smartphone": "手机",
-    "a photo of a computer mouse": "鼠标",
-    "a photo of a computer keyboard": "键盘",
-    "a photo of a charger or power adapter": "充电器",
-    "a photo of a USB cable": "数据线",
-    "a photo of earphones or headphones": "耳机",
-    "a photo of a remote control": "遥控器",
-    "a photo of a desk lamp": "台灯",
-    "a photo of an electric fan": "电风扇",
-    "a photo of a portable power bank": "充电宝",
-    "a photo of a battery, cylindrical cell": "电池",
-    "a photo of an electrical plug": "插头",
+    "a photo of any electronic device, gadget or accessory": "电子产品",
 
     # ===== 玩具/运动用品 =====
     "a photo of a plastic toy": "塑料玩具",
@@ -227,10 +209,10 @@ WASTE_CATEGORY_MAP = {
     "可回收物": {
         "笔", "书本", "橡皮", "纸张", "笔记本", "尺子", "订书机", "文件夹", "信封", "修正带",
         "T恤", "裤子", "外套", "毛衣", "连衣裙", "袜子", "内衣", "鞋子", "帽子", "围巾", "手套", "毛巾", "床单", "被子", "枕头",
-        "洗发水瓶", "沐浴露瓶", "洗衣液瓶", "塑料瓶", "塑料碗", "塑料盒", "塑料袋", "塑料桶", "塑料衣架", "吸管", "塑料餐具",
+        "洗发水瓶", "沐浴露瓶", "洗衣液瓶", "塑料瓶",
         "纸盒子", "纸箱", "报纸", "杂志", "纸袋", "包装纸", "纸杯", "纸碗", "快递盒",
         "玻璃瓶", "玻璃杯", "玻璃罐", "易拉罐", "铁钉", "金属锅", "铝箔纸", "钥匙", "不锈钢杯",
-        "手机", "鼠标", "键盘", "充电器", "数据线", "耳机", "遥控器", "台灯", "电风扇", "充电宝", "插头",
+        "电子产品",
         "塑料玩具", "玩偶", "乐高积木", "球", "羽毛球拍", "篮球", "足球", "跳绳", "拼图", "玩具车",
         "炒锅", "筷子", "盘子", "锅铲", "碗", "水壶", "拖把", "扫帚", "簸箕", "塑料梳子"
     },
