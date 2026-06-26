@@ -105,9 +105,7 @@ LABEL_MAP = {
     "a photo of a toothbrush": "牙刷",
     "a photo of a tube of toothpaste": "牙膏",
     "a photo of a plastic shampoo bottle": "洗发水瓶",
-    "a photo of a body wash bottle": "沐浴露瓶",
     "a photo of a facial cleanser tube": "洗面奶",
-    "a photo of a laundry detergent bottle": "洗衣液瓶",
     "a photo of a bar of soap": "肥皂",
     "a photo of a roll of toilet paper": "卫生纸",
     "a photo of a tissue box": "纸巾盒",
@@ -125,6 +123,8 @@ LABEL_MAP = {
     "a photo of a plastic bucket or pail": "塑料瓶",
     "a photo of plastic cutlery, fork or spoon": "塑料瓶",
     "a photo of a drinking straw made of plastic": "塑料瓶",
+    "a photo of a body wash or shower gel bottle": "塑料瓶",
+    "a photo of a laundry detergent bottle or jug": "塑料瓶",
 
     # ===== 纸制品 =====
     "a photo of a small cardboard box": "纸盒子",
@@ -229,7 +229,7 @@ WASTE_CATEGORY_MAP = {
     "可回收物": {
         "笔", "书本", "橡皮", "纸张", "笔记本", "尺子", "订书机", "文件夹", "信封", "修正带",
         "T恤", "裤子", "外套", "毛衣", "连衣裙", "袜子", "内衣", "鞋子", "帽子", "围巾", "手套", "毛巾", "床单", "被子", "枕头",
-        "洗发水瓶", "沐浴露瓶", "洗衣液瓶", "塑料瓶",
+        "洗发水瓶", "塑料瓶",
         "纸盒子", "纸箱", "报纸", "杂志", "纸袋", "包装纸", "纸杯", "纸碗", "快递盒",
         "玻璃瓶", "玻璃杯", "玻璃罐", "易拉罐", "铁钉", "金属锅", "铝箔纸", "钥匙", "不锈钢杯",
         "电子产品",
