@@ -11,23 +11,23 @@ import sys
 
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 CLIP_MODEL_DIR = os.path.join(SCRIPT_DIR, "clip_model")
-CLIP_MODEL_ID = "openai/clip-vit-base-patch32"
+CLIP_MODEL_ID = "google/siglip-base-patch16-224"
 
 
 def download_clip():
-    """下载 CLIP 模型到 backend/clip_model/"""
-    from transformers import CLIPProcessor, CLIPModel
-    print(f"Downloading CLIP model: {CLIP_MODEL_ID}")
+    """下载 SigLIP 模型到 backend/clip_model/"""
+    from transformers import SiglipProcessor, SiglipModel
+    print(f"Downloading SigLIP model: {CLIP_MODEL_ID}")
     print(f"Saving to: {CLIP_MODEL_DIR}")
     os.makedirs(CLIP_MODEL_DIR, exist_ok=True)
 
-    model = CLIPModel.from_pretrained(CLIP_MODEL_ID)
-    processor = CLIPProcessor.from_pretrained(CLIP_MODEL_ID)
+    model = SiglipModel.from_pretrained(CLIP_MODEL_ID)
+    processor = SiglipProcessor.from_pretrained(CLIP_MODEL_ID)
 
     model.save_pretrained(CLIP_MODEL_DIR)
     processor.save_pretrained(CLIP_MODEL_DIR)
 
-    print("CLIP model downloaded successfully.")
+    print("SigLIP model downloaded successfully.")
 
 
 def download_yolo():

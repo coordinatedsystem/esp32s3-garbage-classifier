@@ -577,7 +577,7 @@ bool captureAndClassify() {
   size_t   jpgLen = 0;
 
   bool ok = fmt2jpg(fb->buf, fb->len, fb->width, fb->height,
-                    PIXFORMAT_YUV422, 40, &jpgBuf, &jpgLen);
+                    PIXFORMAT_YUV422, 70, &jpgBuf, &jpgLen);
   esp_camera_fb_return(fb);
 
   if (!ok || !jpgBuf) {

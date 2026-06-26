@@ -26,7 +26,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
-from transformers import CLIPProcessor, CLIPModel
+from transformers import SiglipModel, SiglipProcessor
 from ultralytics import YOLO
 
 logging.basicConfig(
@@ -129,15 +129,14 @@ LABEL_MAP = {
     "a photo of a plastic shampoo bottle": "塑料瓶",
 
     # ===== 纸制品 =====
-    "a photo of a small cardboard box": "纸盒子",
-    "a photo of a large cardboard shipping box": "纸箱",
+    "a photo of a small cardboard box, shipping carton or parcel": "盒子",
+    "a photo of a cardboard express delivery box with tape seals": "盒子",
     "a photo of a folded newspaper": "报纸",
     "a photo of a magazine with glossy cover": "杂志",
     "a photo of a paper shopping bag": "纸袋",
     "a photo of wrapping paper with pattern": "包装纸",
     "a photo of a disposable paper cup": "纸杯",
     "a photo of a paper bowl": "纸碗",
-    "a photo of a cardboard express parcel box": "快递盒",
 
     # ===== 玻璃/陶瓷 =====
     "a photo of a glass bottle": "玻璃瓶",
@@ -212,7 +211,7 @@ LABEL_MAP = {
 }
 
 TEXT_PROMPTS = list(LABEL_MAP.keys())
-MODEL_NAME = "openai/clip-vit-base-patch32"
+MODEL_NAME = "google/siglip-base-patch16-224"
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "clip_model")
 
 # 本地加载（模型已下载到 backend/clip_model/）
@@ -232,7 +231,7 @@ WASTE_CATEGORY_MAP = {
         "笔", "书本", "橡皮", "纸张", "笔记本", "尺子", "订书机", "文件夹", "信封", "修正带", "剪刀",
         "T恤", "裤子", "外套", "毛衣", "连衣裙", "袜子", "内衣", "鞋子", "帽子", "围巾", "手套", "毛巾", "床单", "被子", "枕头",
         "塑料瓶",
-        "纸盒子", "纸箱", "报纸", "杂志", "纸袋", "包装纸", "纸杯", "纸碗", "快递盒",
+        "盒子", "报纸", "杂志", "纸袋", "包装纸", "纸杯", "纸碗",
         "玻璃瓶", "玻璃杯", "玻璃罐", "易拉罐", "铁钉", "金属锅", "铝箔纸", "钥匙", "不锈钢杯",
         "电子产品",
         "塑料玩具", "玩偶", "乐高积木", "球", "羽毛球拍", "篮球", "足球", "跳绳", "拼图", "玩具车",
@@ -247,6 +246,35 @@ WASTE_CATEGORY_MAP = {
         "陶瓷杯", "陶瓷碗", "陶瓷盘", "一次性餐盒", "一次性杯子", "一次性筷子", "湿巾", "保鲜膜", "棒棒糖"
     }
 }
+
+
+# 两阶段分类分组 —— 每组内物品互斥，组间独立计算
+GROUP_MEMBERS = {
+    "文具":     {"笔", "书本", "橡皮", "纸张", "笔记本", "尺子", "订书机", "文件夹", "信封", "修正带", "剪刀"},
+    "果蔬":     {"苹果", "香蕉", "橙子", "西瓜", "葡萄", "草莓", "西红柿", "黄瓜", "胡萝卜", "土豆", "白菜", "菠菜"},
+    "厨余":     {"剩饭", "剩菜", "骨头", "蛋壳", "茶叶渣", "咖啡渣", "面包", "面条", "饼干", "薯片", "巧克力", "糖果"},
+    "零食":     {"方便面", "果冻", "坚果", "棒棒糖", "口香糖"},
+    "衣物":     {"T恤", "裤子", "外套", "毛衣", "连衣裙", "袜子", "内衣", "鞋子", "帽子", "围巾", "手套"},
+    "日用品":   {"毛巾", "床单", "被子", "枕头", "牙刷", "牙膏", "洗面奶", "肥皂", "卫生纸", "纸巾盒", "口罩", "塑料梳子", "镜子", "洗衣篮", "眼镜"},
+    "塑料":     {"塑料瓶"},
+    "纸制品":   {"盒子", "报纸", "杂志", "纸袋", "包装纸", "纸杯", "纸碗"},
+    "玻璃陶瓷": {"玻璃瓶", "玻璃杯", "玻璃罐", "陶瓷杯", "陶瓷碗", "陶瓷盘"},
+    "金属":     {"易拉罐", "铁钉", "金属锅", "铝箔纸", "钥匙", "不锈钢杯"},
+    "电子":     {"电子产品"},
+    "玩具运动": {"塑料玩具", "玩偶", "乐高积木", "球", "羽毛球拍", "篮球", "足球", "跳绳", "拼图", "玩具车"},
+    "厨具":     {"炒锅", "筷子", "盘子", "锅铲", "碗", "水壶"},
+    "清洁":     {"拖把", "扫帚", "簸箕"},
+    "有害":     {"过期药品", "化妆品瓶", "指甲油瓶", "荧光灯", "温度计", "电池"},
+    "一次性":   {"一次性餐盒", "一次性杯子", "一次性筷子", "湿巾", "保鲜膜"},
+}
+
+# Build reverse map: zh_label → group_id
+_LABEL_TO_GROUP = {}
+for gid, members in GROUP_MEMBERS.items():
+    for lbl in members:
+        _LABEL_TO_GROUP[lbl] = gid
+
+GROUP_IDS = list(GROUP_MEMBERS.keys())
 
 
 def 获取垃圾分类(item_label_zh: str):
@@ -601,17 +629,17 @@ _models_ready = False
 
 
 def _load_clip_and_encode():
-    """Load CLIP model, processor, pre-compute text features and classify results (blocking)."""
+    """Load SigLIP model, processor, pre-compute text features and classify results (blocking)."""
     global model, processor, text_inputs, _text_features, _logit_scale, _CLASSIFY_RESULTS
     global _CLASSIFY_RESULTS_ZH, _CLASSIFY_RESULTS_BY_ZH
-    logger.info("正在加载CLIP模型...")
+    logger.info("正在加载SigLIP模型...")
     if os.path.exists(os.path.join(MODEL_DIR, "config.json")):
-        model = CLIPModel.from_pretrained(MODEL_DIR).to(device).eval()
-        processor = CLIPProcessor.from_pretrained(MODEL_DIR, use_fast=False)
+        model = SiglipModel.from_pretrained(MODEL_DIR).to(device).eval()
+        processor = SiglipProcessor.from_pretrained(MODEL_DIR)
     else:
-        logger.info("  首次运行，正在下载CLIP模型 (~1.2GB)...")
-        model = CLIPModel.from_pretrained(MODEL_NAME).to(device).eval()
-        processor = CLIPProcessor.from_pretrained(MODEL_NAME, use_fast=False)
+        logger.info("  首次运行，正在下载SigLIP模型 (~1.2GB)...")
+        model = SiglipModel.from_pretrained(MODEL_NAME).to(device).eval()
+        processor = SiglipProcessor.from_pretrained(MODEL_NAME)
         model.save_pretrained(MODEL_DIR)
         processor.save_pretrained(MODEL_DIR)
         logger.info(f"  模型已保存到 {MODEL_DIR}")
@@ -622,20 +650,21 @@ def _load_clip_and_encode():
         text=TEXT_PROMPTS, return_tensors="pt", padding=True, truncation=True
     ).to(device)
 
-    # P0-1: Pre-compute L2-normalized CLIP text features (one-time cost)
+    # Pre-compute L2-normalized text features (SigLIP's get_text_features already normalizes,
+    # but re-normalizing is harmless and keeps code consistent)
     with torch.inference_mode():
         _text_features = model.get_text_features(**text_inputs)
         _text_features = _text_features / _text_features.norm(dim=-1, keepdim=True)
     _logit_scale = model.logit_scale.exp()
 
-    # P2-5: Pre-compute classify result dicts (one-time cost)
+    # Pre-compute classify result dicts
     _CLASSIFY_RESULTS = []
     _CLASSIFY_RESULTS_ZH = []
     _CLASSIFY_RESULTS_BY_ZH = {}
     for prompt in TEXT_PROMPTS:
         zh = LABEL_MAP[prompt]
         cat, cat_zh = 获取垃圾分类(zh)
-        entry = {  # use first prompt per label for display
+        entry = {
             "item_label": prompt, "item_label_zh": zh,
             "waste_category": cat, "waste_category_zh": cat_zh,
         }
@@ -644,7 +673,7 @@ def _load_clip_and_encode():
         if zh not in _CLASSIFY_RESULTS_BY_ZH:
             _CLASSIFY_RESULTS_BY_ZH[zh] = entry
 
-    logger.info("✅ 本地CLIP模型加载成功！")
+    logger.info(f"✅ SigLIP模型加载成功！({len(TEXT_PROMPTS)} 个标签, {len(GROUP_IDS)} 个分组)")
 
 
 def _load_yolo():
@@ -686,61 +715,67 @@ def _prep_image(image_data: bytes, max_edge: int | None = 1280) -> Image.Image:
     return image
 
 
-# ===================== CLIP 分类逻辑（提取为独立函数） =====================
+# ===================== SigLIP 两阶段分类 =====================
 def _classify_clip(image_data: bytes):
-    # P1-2: Skip intermediate resize for CLIP (CLIP handles its own preprocessing)
     image = _prep_image(image_data, max_edge=None)
-
     pixel_values = processor(images=image, return_tensors="pt").pixel_values.to(device)
 
-    # P0-1: Use pre-computed text features instead of full model forward pass
     with torch.inference_mode():
         img_feats = model.get_image_features(pixel_values)
         img_feats = img_feats / img_feats.norm(dim=-1, keepdim=True)
         logits_per_image = (img_feats @ _text_features.T) * _logit_scale
 
-    # logits: higher = better match (pre-softmax similarity × logit_scale)
     logits = logits_per_image.squeeze().cpu().numpy()
 
-    # Aggregate by Chinese label: take the MAX logit across all prompts for the same label
+    # Aggregate by Chinese label: MAX logit per label
     zh_logits = {}
-    zh_best_idx = {}   # track which prompt index gave the max logit per label
+    zh_best_idx = {}
     for i, zh in enumerate(_CLASSIFY_RESULTS_ZH):
         if zh not in zh_logits or logits[i] > zh_logits[zh]:
             zh_logits[zh] = logits[i]
             zh_best_idx[zh] = i
-    zh_items = list(zh_logits.items())
-    zh_labels = [item[0] for item in zh_items]
-    zh_logit_vals = np.array([item[1] for item in zh_items])
 
-    # Softmax over per-label max logits
-    zh_probs = np.exp(zh_logit_vals - zh_logit_vals.max())
-    zh_probs = zh_probs / zh_probs.sum()
-    sorted_idx = np.argsort(zh_probs)[::-1]
+    zh_labels_list = list(zh_logits.keys())
+    zh_logit_vals = np.array(list(zh_logits.values()))
 
-    best_zh = zh_labels[sorted_idx[0]]
-    best_conf = float(zh_probs[sorted_idx[0]])
+    # ── Stage 1: group-level softmax ──
+    group_logits = {}
+    for gid in GROUP_IDS:
+        members = GROUP_MEMBERS[gid]
+        # max logit among labels in this group
+        candidates = [zh_logits[lbl] for lbl in members if lbl in zh_logits]
+        group_logits[gid] = max(candidates) if candidates else -1e9
+    g_logit_arr = np.array(list(group_logits.values()))
+    g_probs = np.exp(g_logit_arr - g_logit_arr.max())
+    g_probs = g_probs / g_probs.sum()
+    winning_group = GROUP_IDS[int(np.argmax(g_probs))]
+    group_conf = float(g_probs.max())
 
-    # Confidence threshold
-    if best_conf < 0.25:
-        return {
-            "waste_category": "unknown",
-            "waste_category_zh": "无法识别",
-            "item_label": "unclear object",
-            "item_label_zh": "无法识别",
-            "confidence": best_conf,
-            "tip": "请将物品放在光线充足处重试",
-            "top3": [],
-            "model_used": "clip"
-        }
+    # ── Stage 2: within-group softmax ──
+    mask = np.array([_LABEL_TO_GROUP.get(lbl, "") == winning_group for lbl in zh_labels_list])
+    sub_labels = [zh_labels_list[i] for i in range(len(zh_labels_list)) if mask[i]]
+    sub_logits = zh_logit_vals[mask]
 
-    # Reuse pre-computed result dict; update item_label with best-matching prompt
+    if len(sub_logits) == 0:
+        return _unknown_result(0.0, "clip")
+
+    sub_probs = np.exp(sub_logits - sub_logits.max())
+    sub_probs = sub_probs / sub_probs.sum()
+    sub_sorted = np.argsort(sub_probs)[::-1]
+
+    best_zh = sub_labels[sub_sorted[0]]
+    best_conf = float(sub_probs[sub_sorted[0]])
+
+    # Threshold at 20%
+    if best_conf < 0.20:
+        return _unknown_result(best_conf, "clip")
+
     best_result = dict(_CLASSIFY_RESULTS_BY_ZH[best_zh])
     best_result["item_label"] = TEXT_PROMPTS[zh_best_idx[best_zh]]
     top3_list = [
-        dict(_CLASSIFY_RESULTS_BY_ZH[zh_labels[i]], confidence=float(zh_probs[i]),
-             item_label=TEXT_PROMPTS[zh_best_idx[zh_labels[i]]])
-        for i in sorted_idx[:3]
+        dict(_CLASSIFY_RESULTS_BY_ZH[sub_labels[i]], confidence=float(sub_probs[i]),
+             item_label=TEXT_PROMPTS[zh_best_idx[sub_labels[i]]])
+        for i in sub_sorted[:3]
     ]
 
     return {
