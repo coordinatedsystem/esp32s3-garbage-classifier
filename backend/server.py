@@ -48,6 +48,7 @@ LABEL_MAP = {
     "a photo of a folder for documents": "文件夹",
     "a photo of an envelope for letters": "信封",
     "a photo of correction tape": "修正带",
+    "a photo of a pair of scissors": "剪刀",
 
     # ===== 水果蔬菜食物 =====
     "a photo of an apple fruit": "苹果",
@@ -104,7 +105,6 @@ LABEL_MAP = {
     "a photo of a pillow": "枕头",
     "a photo of a toothbrush": "牙刷",
     "a photo of a tube of toothpaste": "牙膏",
-    "a photo of a plastic shampoo bottle": "洗发水瓶",
     "a photo of a facial cleanser tube": "洗面奶",
     "a photo of a bar of soap": "肥皂",
     "a photo of a roll of toilet paper": "卫生纸",
@@ -113,6 +113,7 @@ LABEL_MAP = {
     "a photo of a plastic comb": "塑料梳子",
     "a photo of a mirror": "镜子",
     "a photo of a plastic laundry basket": "洗衣篮",
+    "a photo of a pair of eyeglasses or spectacles": "眼镜",
 
     # ===== 塑料制品（多条具体描述→同一中文标签） =====
     "a photo of a clear plastic or PET beverage bottle": "塑料瓶",
@@ -125,6 +126,7 @@ LABEL_MAP = {
     "a photo of a drinking straw made of plastic": "塑料瓶",
     "a photo of a body wash or shower gel bottle": "塑料瓶",
     "a photo of a laundry detergent bottle or jug": "塑料瓶",
+    "a photo of a plastic shampoo bottle": "塑料瓶",
 
     # ===== 纸制品 =====
     "a photo of a small cardboard box": "纸盒子",
@@ -227,14 +229,15 @@ WASTE_CATEGORY_MAP = {
         "方便面", "果冻", "坚果"
     },
     "可回收物": {
-        "笔", "书本", "橡皮", "纸张", "笔记本", "尺子", "订书机", "文件夹", "信封", "修正带",
+        "笔", "书本", "橡皮", "纸张", "笔记本", "尺子", "订书机", "文件夹", "信封", "修正带", "剪刀",
         "T恤", "裤子", "外套", "毛衣", "连衣裙", "袜子", "内衣", "鞋子", "帽子", "围巾", "手套", "毛巾", "床单", "被子", "枕头",
-        "洗发水瓶", "塑料瓶",
+        "塑料瓶",
         "纸盒子", "纸箱", "报纸", "杂志", "纸袋", "包装纸", "纸杯", "纸碗", "快递盒",
         "玻璃瓶", "玻璃杯", "玻璃罐", "易拉罐", "铁钉", "金属锅", "铝箔纸", "钥匙", "不锈钢杯",
         "电子产品",
         "塑料玩具", "玩偶", "乐高积木", "球", "羽毛球拍", "篮球", "足球", "跳绳", "拼图", "玩具车",
-        "炒锅", "筷子", "盘子", "锅铲", "碗", "水壶", "拖把", "扫帚", "簸箕", "塑料梳子"
+        "炒锅", "筷子", "盘子", "锅铲", "碗", "水壶", "拖把", "扫帚", "簸箕", "塑料梳子",
+        "眼镜",
     },
     "有害垃圾": {
         "过期药品", "化妆品瓶", "指甲油瓶", "荧光灯", "温度计", "电池"
