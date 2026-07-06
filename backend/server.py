@@ -407,7 +407,40 @@ _hw_lock = threading.Lock()       # hardware_state, last_capture_image
 _hist_lock = threading.Lock()     # server_history
 _metrics_lock = threading.Lock()  # runtime_metrics
 _trigger_lock = threading.Lock()  # trigger_config
-HARDWARE_STALE_SECONDS = 60  # ESP32 每 30s 发心跳，超 60s 未收到视为离线（给予双倍容忍，应对偶尔的单次包丢失）
+_quality_lock = threading.Lock()
+quality_config = {
+    "jpeg_quality": 85  # 默认画质 (10-95)，越高画质越好但文件越大
+}
+quality_config_version = 0
+
+_camera_lock = threading.Lock()
+camera_config = {
+    "brightness": 0,       # -2 to 2
+    "contrast": 0,         # -2 to 2
+    "saturation": 0,       # -2 to 2
+    "ae_level": 0,         # -2 to 2
+    "aec_value": 250,      # 0-1200, 曝光值
+    "exposure_ctrl": 1,    # 0/1 自动曝光
+    "gain_ctrl": 1,        # 0/1 自动增益
+    "whitebal": 1,         # 0/1 自动白平衡
+    "hmirror": 0,          # 0/1 水平镜像
+    "vflip": 0,            # 0/1 垂直翻转
+    "awb_gain": 1,         # 0/1 自动白平衡增益
+    "aec2": 1,             # 0/1 自动曝光传感器模式
+    "agc_gain": 0,         # 0-30 手动AGC增益值
+    "dcw": 1,              # 0/1 下采样
+    "bpc": 0,              # 0/1 黑点校正
+    "wpc": 0,              # 0/1 白点校正
+    "raw_gma": 1,          # 0/1 伽马校正
+    "lenc": 1,             # 0/1 镜头校正
+    "special_effect": 0,   # 0-6 特殊效果
+    "wb_mode": 0,          # 0-4 白平衡模式
+}
+_camera_config_version = 0
+CAMERA_DEFAULTS = dict(camera_config)  # 保存出厂默认值用于重置
+server_start_time = time.time()
+
+HARDWARE_STALE_SECONDS = 35  # ESP32 每 30s 发心跳，超 35s 未收到视为离线
 
 hardware_state = {
     "online": False,
@@ -432,8 +465,6 @@ def _update_hardware_online():
         last_seen = hardware_state["last_seen"]
         if was_online and last_seen and (now - last_seen > HARDWARE_STALE_SECONDS):
             hardware_state["online"] = False
-        elif not was_online and last_seen and (now - last_seen <= HARDWARE_STALE_SECONDS):
-            pass  # _mark_hardware_online 会设置 online=True
         is_online = hardware_state["online"]
         changed = (was_online != is_online) or (_hardware_was_online != is_online)
         _hardware_was_online = is_online
@@ -459,7 +490,8 @@ trigger_config = {
     "distance_min": 30,         # mm, 最小触发距离
     "distance_max": 300,        # mm, 最大触发距离
     "cooldown_ms": 2000,        # ms, 触发缓冲时间 (物体需稳定在范围内的时间)
-    "trigger_interval_ms": 10000  # ms, 两次触发最小间隔
+    "trigger_interval_ms": 10000,  # ms, 两次触发最小间隔
+    "jpeg_quality": 85,          # 画质 10-95
 }
 
 # SSE fan-out — all operations happen within the async event loop (single-threaded cooperative),
@@ -624,7 +656,7 @@ async def lifespan(app: FastAPI):
     _sse_queues.clear()
 
 
-app = FastAPI(title="物品识别API", version="5.3.0", lifespan=lifespan)
+app = FastAPI(title="物品识别API", version="5.2.0", lifespan=lifespan)
 app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
 
 
@@ -877,7 +909,7 @@ async def classify_image(
     file: UploadFile = File(...),
     source: str = Query("web"),
     ip: str = Query(""),
-    model: str = Query(""),   # 可选：覆盖当前激活的分类模型
+    model_name: str = Query(""),   # 可选：覆盖当前激活的分类模型
     trigger_mode: str = Query(""),
     background_tasks: BackgroundTasks = None
 ):
@@ -888,7 +920,7 @@ async def classify_image(
             raise HTTPException(status_code=503, detail="Models still loading — please retry shortly")
         image_data = await file.read()
         with _active_model_lock:
-            classify_model = model if model else active_classify_model
+            classify_model = model_name if model_name else active_classify_model
         logger.info(f"[classify] source={source}, ip={ip}, model={classify_model}, image_size={len(image_data)}")
 
         # ESP32 硬件上线标记
@@ -1014,7 +1046,24 @@ async def health():
         return {"status": "starting", "active_model": active_classify_model}
     with _active_model_lock:
         am = active_classify_model
-    return {"status": "healthy", "active_model": am}
+    with _quality_lock:
+        qc = dict(quality_config)
+    with _camera_lock:
+        cc = dict(camera_config)
+    return {
+        "status": "healthy",
+        "uptime_seconds": round(uptime, 1),
+        "models_loaded": True,
+        "hardware_online": hw_online,
+        "hardware_captures": capture_count,
+        "device": device,
+        "clip_labels": len(TEXT_PROMPTS),
+        "active_model": am,
+        "trigger_config": tc,
+        "quality_config": qc,
+        "camera_config": cc,
+        "config_version": {"quality": quality_config_version, "camera": _camera_config_version}
+    }
 
 
 # ===================== 模型管理接口 =====================
@@ -1088,18 +1137,23 @@ class TriggerConfigBody(BaseModel):
     distance_max: int = 300           # mm
     cooldown_ms: int = 2000           # ms
     trigger_interval_ms: int = 10000  # ms
+    jpeg_quality: int = 85            # JPEG quality 10-95
 
 
 @app.get("/trigger/config")
 async def get_trigger_config():
     with _trigger_lock:
-        return dict(trigger_config)
+        tc = dict(trigger_config)
+    with _camera_lock:
+        tc["camera"] = dict(camera_config)
+    return tc
 
 
 @app.post("/trigger/config")
 async def set_trigger_config(body: TriggerConfigBody):
-    if body.mode not in ("distance",):
-        raise HTTPException(status_code=400, detail="mode must be 'distance'")
+    global quality_config_version
+    if body.mode not in ("button", "distance"):
+        raise HTTPException(status_code=400, detail="mode must be 'button' or 'distance'")
     if body.distance_min < 0 or body.distance_max > 2000:
         raise HTTPException(status_code=400, detail="distance range must be 0-2000 mm")
     if body.distance_min >= body.distance_max:
@@ -1108,14 +1162,177 @@ async def set_trigger_config(body: TriggerConfigBody):
         raise HTTPException(status_code=400, detail="cooldown_ms must be 0-30000 ms")
     if body.trigger_interval_ms < 1000 or body.trigger_interval_ms > 60000:
         raise HTTPException(status_code=400, detail="trigger_interval_ms must be 1000-60000 ms")
+    if body.jpeg_quality < 10 or body.jpeg_quality > 95:
+        raise HTTPException(status_code=400, detail="jpeg_quality must be 10-95")
     with _trigger_lock:
         trigger_config["mode"] = body.mode
         trigger_config["distance_min"] = body.distance_min
         trigger_config["distance_max"] = body.distance_max
         trigger_config["cooldown_ms"] = body.cooldown_ms
         trigger_config["trigger_interval_ms"] = body.trigger_interval_ms
-    logger.info(f"[trigger] config updated: mode={body.mode} range={body.distance_min}-{body.distance_max}mm cooldown={body.cooldown_ms}ms interval={body.trigger_interval_ms}ms")
+        trigger_config["jpeg_quality"] = body.jpeg_quality
+    with _quality_lock:
+        quality_config["jpeg_quality"] = body.jpeg_quality
+        quality_config_version += 1
+    logger.info(f"[trigger] config updated: mode={body.mode} range={body.distance_min}-{body.distance_max}mm cooldown={body.cooldown_ms}ms interval={body.trigger_interval_ms}ms quality={body.jpeg_quality}")
     return {"message": "Trigger config updated", "config": dict(trigger_config)}
+
+
+# ===================== 画质配置接口 =====================
+
+
+class QualityConfigBody(BaseModel):
+    jpeg_quality: int = 85
+
+
+@app.get("/quality/config")
+async def get_quality_config():
+    with _quality_lock:
+        return dict(quality_config)
+
+
+@app.post("/quality/config")
+async def set_quality_config(body: QualityConfigBody):
+    global quality_config_version
+    if body.jpeg_quality < 10 or body.jpeg_quality > 95:
+        raise HTTPException(status_code=400, detail="jpeg_quality must be 10-95")
+    with _quality_lock:
+        quality_config["jpeg_quality"] = body.jpeg_quality
+        quality_config_version += 1
+    # 同步到 trigger_config 以便 ESP32 拉取 trigger/config 时能读到画质
+    with _trigger_lock:
+        trigger_config["jpeg_quality"] = body.jpeg_quality
+    logger.info(f"[quality] config updated: jpeg_quality={body.jpeg_quality}")
+    return {"message": "Quality config updated", "config": dict(quality_config), "config_version": quality_config_version}
+
+
+# ===================== 摄像头参数接口 =====================
+
+
+class CameraConfigBody(BaseModel):
+    brightness: int | None = None
+    contrast: int | None = None
+    saturation: int | None = None
+    ae_level: int | None = None
+    aec_value: int | None = None
+    exposure_ctrl: int | None = None
+    gain_ctrl: int | None = None
+    whitebal: int | None = None
+    hmirror: int | None = None
+    vflip: int | None = None
+    awb_gain: int | None = None
+    aec2: int | None = None
+    agc_gain: int | None = None
+    dcw: int | None = None
+    bpc: int | None = None
+    wpc: int | None = None
+    raw_gma: int | None = None
+    lenc: int | None = None
+    special_effect: int | None = None
+    wb_mode: int | None = None
+
+
+CAMERA_RANGES = {
+    "brightness": (-2, 2),
+    "contrast": (-2, 2),
+    "saturation": (-2, 2),
+    "ae_level": (-2, 2),
+    "aec_value": (0, 1200),
+    "exposure_ctrl": (0, 1),
+    "gain_ctrl": (0, 1),
+    "whitebal": (0, 1),
+    "hmirror": (0, 1),
+    "vflip": (0, 1),
+    "awb_gain": (0, 1),
+    "aec2": (0, 1),
+    "agc_gain": (0, 30),
+    "dcw": (0, 1),
+    "bpc": (0, 1),
+    "wpc": (0, 1),
+    "raw_gma": (0, 1),
+    "lenc": (0, 1),
+    "special_effect": (0, 6),
+    "wb_mode": (0, 4),
+}
+
+
+@app.get("/camera/config")
+async def get_camera_config():
+    with _camera_lock:
+        return dict(camera_config)
+
+
+@app.post("/camera/config")
+async def set_camera_config(body: CameraConfigBody):
+    global _camera_config_version
+    updates = {}
+    for field, value in body.model_dump(exclude_none=True).items():
+        lo, hi = CAMERA_RANGES.get(field, (-999, 999))
+        if value < lo or value > hi:
+            raise HTTPException(status_code=400, detail=f"{field} must be in [{lo}, {hi}]")
+        updates[field] = value
+    with _camera_lock:
+        camera_config.update(updates)
+        _camera_config_version += 1
+    logger.info(f"[camera] config updated: {updates}")
+    return {"message": "Camera config updated", "config": dict(camera_config), "config_version": _camera_config_version}
+
+
+@app.post("/camera/config/reset")
+async def reset_camera_config():
+    global _camera_config_version
+    with _camera_lock:
+        camera_config.clear()
+        camera_config.update(CAMERA_DEFAULTS)
+        _camera_config_version += 1
+    logger.info("[camera] config reset to defaults")
+    return {"message": "Camera config reset to defaults", "config": dict(camera_config), "config_version": _camera_config_version}
+
+
+# ===================== 配置总览接口 =====================
+@app.get("/config/all")
+async def get_all_config():
+    with _quality_lock:
+        qc = dict(quality_config)
+    with _camera_lock:
+        cc = dict(camera_config)
+    with _trigger_lock:
+        tc = dict(trigger_config)
+    with _active_model_lock:
+        am = active_classify_model
+    with _metrics_lock:
+        inf = dict(runtime_metrics["inference"])
+        req_total = runtime_metrics["requests_total"]
+        req_failed = runtime_metrics["requests_failed"]
+        paths = dict(runtime_metrics["paths"])
+    with _hw_lock:
+        hw = {
+            "online": hardware_state["online"],
+            "capture_count": hardware_state["capture_count"],
+            "device_id": hardware_state["device_id"],
+            "firmware_version": hardware_state["firmware_version"],
+            "ip_address": hardware_state["ip_address"],
+        }
+    read_only = {
+        "server_uptime_seconds": round(time.time() - server_start_time, 1),
+        "models_ready": _models_ready,
+        "active_model": am,
+        "hardware": hw,
+        "metrics": {
+            "requests_total": req_total,
+            "requests_failed": req_failed,
+            "inference": inf,
+            "paths": {p: dict(s) for p, s in paths.items()},
+        },
+        "clip_labels_count": len(TEXT_PROMPTS),
+        "camera_ranges": {k: list(v) for k, v in CAMERA_RANGES.items()},
+    }
+    modifiable = {
+        "jpeg_quality": qc,
+        "camera": cc,
+        "trigger": tc,
+    }
+    return {"read_only": read_only, "modifiable": modifiable, "config_version": {"quality": quality_config_version, "camera": _camera_config_version}}
 
 
 # ===================== YOLO 检测接口 =====================

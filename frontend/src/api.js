@@ -34,7 +34,7 @@ export function getModels() {
 export async function classifyImage(file, model = '') {
   const formData = new FormData()
   formData.append('file', file)
-  const qs = model ? `?model=${model}` : ''
+  const qs = model ? `?model_name=${model}` : ''
   return request(`/classify${qs}`, { method: 'POST', body: formData })
 }
 
@@ -103,4 +103,39 @@ export function setTriggerConfig(config) {
 
 export function getRuntimeMetrics() {
   return request('/metrics/runtime', { timeoutMs: 10000 })
+}
+
+export function getQualityConfig() {
+  return request('/quality/config')
+}
+
+export function setQualityConfig(config) {
+  return request('/quality/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config)
+  })
+}
+
+export function getCameraConfig() {
+  return request('/camera/config')
+}
+
+export function setCameraConfig(config) {
+  return request('/camera/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config)
+  })
+}
+
+export function resetCameraConfig() {
+  return request('/camera/config/reset', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  })
+}
+
+export function getAllConfig() {
+  return request('/config/all', { timeoutMs: 10000 })
 }

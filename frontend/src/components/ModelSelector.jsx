@@ -46,7 +46,7 @@ const ModelSelector = memo(function ModelSelector({ mode, setMode, disabled, vis
     Promise.all([getModels(), getActiveModel()])
       .then(([modelData, activeData]) => {
         setModels(modelData.models)
-        if (activeData.active !== 'detect' && activeData.active !== mode && mode !== 'detect') {
+        if (activeData.active !== 'detect') {
           setMode(activeData.active)
         }
       })

@@ -15,14 +15,10 @@ export default defineConfig({
       '/model': 'http://localhost:8085',
       '/trigger': 'http://localhost:8085',
       '/metrics': 'http://localhost:8085',
-      '/events': {
-        target: 'http://localhost:8085',
-        ws: false
-      },
-      '/ws': {
-        target: 'http://localhost:8085',
-        ws: true
-      }
+      '/events': 'http://localhost:8085',
+      '/quality': 'http://localhost:8085',
+      '/camera': 'http://localhost:8085',
+      '/config': 'http://localhost:8085'
     }
   }
 })

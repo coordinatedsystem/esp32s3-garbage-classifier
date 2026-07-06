@@ -228,6 +228,12 @@ const int   SERVER_PORT   = 8085;
 - **固件 HTTP 错峰**：拍照后 `lastConfigFetch` 设为 `millis() + 2500`
 - **冗余代码删除**：`_update_hardware_online` 中 `elif pass` 分支清理
 
+### v5.1.1
+- **HTTP 超时调整**：30s → 15s，更快释放锁死连接
+- **连接重试机制**：`WiFiClient` 连接失败自动重试 2 次（间隔 300ms），连接前清理 socket 残留状态
+- **上传分块优化**：8KB → 4KB，每块发送后 `yield()` 让出 CPU 给 TCP/IP 栈，减少丢包重传
+- **固件 TWDT 管理移除**：不再显式管理硬件看门狗，交由 Arduino 框架自动处理
+
 ### v5.1.0
 - **CLIP 文本特征预计算**：启动时一次性计算 151 条文本 prompt 的 L2 归一化特征向量，推理时仅跑图像编码器 + 余弦相似度，推理延迟降低 35–50%（800–1200ms → 400–600ms）
 - **并行模型加载**：CLIP + YOLO 通过 `asyncio.gather()` 并行加载，启动时间减半（~10s → ~6s），uvicorn 立即接受连接
