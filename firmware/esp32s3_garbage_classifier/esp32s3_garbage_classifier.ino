@@ -106,10 +106,11 @@ int lastCountdownSec = -1;              // 防重复刷新倒计时
 bool waitingDistanceClear = false;      // 自动触发后等待目标移开
 unsigned long distanceClearDeadline = 0;
 unsigned long lastHeartbeatMs = 0;
-DynamicJsonDocument classifyDoc(2048);  // Actual max response ~1200 bytes observed
+DynamicJsonDocument classifyDoc(4096);  // v5.3.1: increased from 2048 — CLIP response with top3 + long English labels easily exceeds 2KB
 bool firstBoot = true;
 unsigned long lastLivenessProbe = 0;     // 后端 TCP 探测计时
 bool serverReachable = false;            // 后端是否可达
+unsigned long lastReadyMs = 0;           // 上次进入待机界面的时间（看门狗：超 30s 强制复位）
 
 // ==============================
 // 屏幕小工具
@@ -131,17 +132,27 @@ void num(int x, int y, uint8_t sz, uint16_t c, int n) {
 }
 
 void bar(const char* s) {
-  tft.fillRect(0, 140, 128, 20, C_BLACK);
-  tft.setCursor(2, 144);
+  tft.fillRect(0, 138, 128, 22, C_BLACK);
+  tft.setCursor(4, 142);
   tft.setTextSize(1);
   tft.setTextColor(C_YELLOW);
   tft.print(s);
 }
 
+void bar_capture(const char* s) {
+  tft.fillRect(8, 100, 112, 18, C_BLACK);
+  tft.drawRoundRect(8, 100, 112, 18, 5, 0x2965);
+  tft.setCursor(12, 103);
+  tft.setTextSize(1);
+  tft.setTextColor(C_GREEN);
+  tft.print(s);
+}
+
 void err(const char* s) {
   cls();
-  txt(0, 5, 3, C_RED, "ERROR");
-  txt(0, 50, 2, C_WHITE, s);
+  tft.fillRoundRect(8, 40, 112, 80, 10, 0x2965);
+  txt(28, 52, 1, C_RED, "ERROR");
+  txt(28, 66, 1, C_WHITE, s);
 }
 
 // ==============================
@@ -387,8 +398,9 @@ void fetchTriggerConfig() {
       int    ti = doc["trigger_interval_ms"] | 10000;
 
       if (m != triggerMode || d1 != distanceMin || d2 != distanceMax || cd != cooldownMs || ti != triggerIntervalMs) {
-        tft.fillRect(0, 140, 128, 20, C_BLACK);
-        txt(2, 144, 1, C_YELLOW, "Updating...");
+        // Bottom bar message
+        tft.fillRect(0, 138, 128, 22, C_BLACK);
+        txt(4, 142, 1, C_YELLOW, "Updating");
         bool modeChanged = (m != triggerMode);
         triggerMode  = m;
         distanceMin  = d1;
@@ -401,8 +413,8 @@ void fetchTriggerConfig() {
         }
         configChanged = true;
         configMsgMs   = millis();
-        tft.fillRect(0, 140, 128, 20, C_BLACK);
-        txt(2, 144, 1, C_GREEN, "Config OK");
+        tft.fillRect(0, 138, 128, 22, C_BLACK);
+        txt(4, 142, 1, C_GREEN, "OK");
         Serial.printf("[CFG] trigger=%s range=%d-%dmm cooldown=%dms interval=%dms\n",
                       triggerMode.c_str(), distanceMin, distanceMax, cooldownMs, triggerIntervalMs);
         drawReadyConfig();
@@ -443,7 +455,10 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
   const String foot = "\r\n--" + boundary + "--\r\n";
 
   // 最多重试 3 次（每次包含连接+发送+读取完整周期）
+  // 总超时看门狗：所有重试合计超过 30s 则放弃
+  unsigned long retryDeadline = millis() + 30000;
   for (int attempt = 0; attempt < 3; attempt++) {
+    if (millis() > retryDeadline) break;  // 总超时看门狗
     if (attempt > 0) {
       delay(500);  // 重试间隔
       Serial.printf("[HTTP] retry %d/3\n", attempt + 1);
@@ -451,13 +466,10 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
 
     WiFiClient client;
     client.setTimeout(3000);  // socket 单次操作超时 (LAN短)
-    client.stop();            // 清理残留 socket
+    // (不调用 client.stop() — 新创建的 client 无连接要清理)
 
-    // 连接
-    int connectStart = millis();
     if (!client.connect(SERVER_HOST, SERVER_PORT)) {
       Serial.printf("[HTTP] connect failed\n");
-      client.stop();
       continue;
     }
 
@@ -480,17 +492,18 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
       sent += written;
       yield();
     }
-    if (writeFail) { client.stop(); continue; }
+    if (writeFail) { continue; }
 
     client.print(foot);
     client.flush();
 
-    // 等待响应
-    unsigned long start = millis();
+    // ── 等待响应（超时 → 下一轮重试） ──
+    unsigned long respWaitStart = millis();
     while (!client.available() && client.connected()) {
-      if (millis() - start > HTTP_TIMEOUT_MS) { client.stop(); continue; }
+      if (millis() - respWaitStart > HTTP_TIMEOUT_MS) break;
       delay(1);
     }
+    if (!client.available() && !client.connected()) { continue; }
 
     // 解析 HTTP 状态行
     String statusLine = client.readStringUntil('\n');
@@ -511,17 +524,19 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
       }
     }
 
-    // 读响应体
+    // ── 读响应体（超时 → 下一轮重试） ──
     responseBody = "";
     responseBody.reserve(4096);
+    bool bodyTimeout = false;
     if (contentLength >= 0) {
       int remaining = contentLength;
-      while (remaining > 0 && client.connected()) {
-        start = millis();
+      while (remaining > 0 && client.connected() && !bodyTimeout) {
+        unsigned long readStart = millis();
         while (!client.available() && client.connected()) {
-          if (millis() - start > HTTP_TIMEOUT_MS) { client.stop(); return false; }
+          if (millis() - readStart > HTTP_TIMEOUT_MS) { bodyTimeout = true; break; }
           delay(1);
         }
+        if (bodyTimeout) break;
         char buf[256];
         int toRead = remaining > (int)sizeof(buf) ? (int)sizeof(buf) : remaining;
         int n = client.readBytes(buf, toRead);
@@ -530,16 +545,18 @@ bool postMultipartJpeg(const String& path, const uint8_t* jpgBuf, size_t jpgLen,
         if (responseBody.length() > 4096) break;
         remaining -= n;
       }
+      if (bodyTimeout) { continue; }
     } else {
+      unsigned long readEnd = millis() + HTTP_TIMEOUT_MS;
       while (client.connected() || client.available()) {
         while (client.available()) {
           if (responseBody.length() > 4096) break;
           responseBody += (char)client.read();
         }
+        if (millis() > readEnd) break;
         delay(1);
       }
     }
-    client.stop();
 
     if (statusCode == 200) return true;
     // HTTP 4xx/5xx → 不重试，直接返回
@@ -558,8 +575,11 @@ bool captureAndClassify() {
   unsigned long t0 = millis();
 
   cls();
-  bar("Capturing...");
-  txt(0, 50, 2, C_WHITE, "Photo...");
+  // Cleaner capture screen
+  // Draw a centered "capturing" card
+  tft.drawRoundRect(16, 40, 96, 80, 10, 0x2965);
+  txt(24, 55, 1, C_DARKGREY, "Scanning...");
+  txt(28, 72, 2, C_WHITE, "Photo");
 
   // 丢弃传感器缓冲区的旧帧，确保每次拍照都是最新的画面
   camera_fb_t *stale = esp_camera_fb_get();
@@ -569,15 +589,15 @@ bool captureAndClassify() {
   camera_fb_t *fb = esp_camera_fb_get();
   if (!fb) { err("Capture fail"); return false; }
 
-  bar("Converting...");
-  tft.fillRect(0, 48, 128, 20, C_BLACK);
-  txt(0, 50, 2, C_WHITE, "Convert...");
+  tft.fillRoundRect(16, 40, 96, 80, 10, 0x2965);
+  txt(24, 55, 1, C_DARKGREY, "Processing...");
+  txt(28, 72, 2, C_WHITE, "Convert");
 
   uint8_t *jpgBuf = NULL;
   size_t   jpgLen = 0;
 
   bool ok = fmt2jpg(fb->buf, fb->len, fb->width, fb->height,
-                    PIXFORMAT_YUV422, 70, &jpgBuf, &jpgLen);
+                    PIXFORMAT_YUV422, 92, &jpgBuf, &jpgLen);
   esp_camera_fb_return(fb);
 
   if (!ok || !jpgBuf) {
@@ -588,12 +608,17 @@ bool captureAndClassify() {
 
   unsigned long t1 = millis();
 
-  tft.fillRect(0, 48, 128, 20, C_BLACK);
-  txt(0, 50, 1, C_GREEN, "Convert OK");
-  num(0, 65, 1, C_DARKGREY, (int)jpgLen);
-  txt(35, 65, 1, C_DARKGREY, "B");
+  // Show uploading indicator
+  tft.fillRoundRect(16, 40, 96, 80, 10, 0x2965);
+  txt(24, 55, 1, C_GREEN, "Convert OK");
+  txt(28, 72, 1, C_DARKGREY, "Uploading...");
 
-  bar("Classifying...");
+  // Progress dot animation
+  for (int i = 0; i < 3; i++) {
+    tft.fillCircle(55 + i * 12, 98, 3, C_GREEN);
+  }
+
+  bar_capture("Classifying...");
 
   String hostStr = String(SERVER_HOST) + ":" + String(SERVER_PORT);
   char pathBuf[256];
@@ -608,19 +633,26 @@ bool captureAndClassify() {
     free(jpgBuf);
 
     cls();
-    txt(0, 5, 2, C_RED, "HTTP ERR");
-    txt(0, 30, 1, C_WHITE, "Code:");
-    num(45, 30, 2, C_WHITE, code);
-    txt(0, 55, 1, C_DARKGREY, "Srv:");
-    txt(30, 55, 1, C_YELLOW, hostStr.c_str());
-    txt(0, 70, 1, C_DARKGREY, "RSSI:");
-    num(40, 70, 1, C_YELLOW, WiFi.RSSI());
-    txt(0, 95, 1, C_DARKGREY, "Retry later");
+    tft.fillRoundRect(8, 30, 112, 100, 10, 0x2965);
+    txt(28, 42, 2, C_RED, "HTTP ERR");
+    tft.drawFastHLine(20, 64, 88, 0x2965);
+    txt(16, 70, 1, C_WHITE, "Code: ");
+    num(56, 70, 1, C_RED, code);
+    txt(16, 82, 1, C_DARKGREY, "Srv:");
+    txt(46, 82, 1, C_YELLOW, hostStr.c_str());
+    txt(16, 94, 1, C_DARKGREY, "RSSI:");
+    num(56, 94, 1, C_YELLOW, WiFi.RSSI());
+    txt(16, 106, 1, 0x7BEF, "Retry later");
     return false;
   }
   // 通信成功
   unsigned long t2 = millis();
   serverReachable = true;
+
+  // 计算各阶段耗时（此前 totalMs/convMs/netMs 未被计算，是未定义变量，导致显示乱码等问题）
+  unsigned long totalMs = t2 - t0;
+  unsigned long convMs = t1 - t0;
+  unsigned long netMs = t2 - t1;
 
   // 解析 — 使用堆分配避免大对象占栈
   int jsonStart = body.indexOf('{');
@@ -640,189 +672,283 @@ bool captureAndClassify() {
       Serial.printf("[JSON] preview: %s\n", preview.c_str());
     }
     free(jpgBuf);
-    err("JSON error");
+    // Show more info on screen: error type + response length
+    cls();
+    tft.fillRoundRect(8, 30, 112, 100, 10, 0x2965);
+    txt(28, 42, 2, C_RED, "JSON ERR");
+    tft.drawFastHLine(20, 64, 88, 0x2965);
+    {
+      char tmp[20];
+      snprintf(tmp, sizeof(tmp), "%s", jerr.c_str());
+      txt(12, 72, 1, C_WHITE, tmp);
+    }
+    {
+      char tmp[20];
+      snprintf(tmp, sizeof(tmp), "body: %d", body.length());
+      txt(12, 84, 1, C_DARKGREY, tmp);
+    }
+    txt(12, 98, 1, 0x7BEF, "see Serial");
     return false;
   }
 
-  String itemEn  = classifyDoc["result"]["item_label"] | "?";
   float  conf    = classifyDoc["result"]["confidence"] | 0.0f;
   String modelUs = classifyDoc["result"]["model_used"] | "?";
   int    inferMs = classifyDoc["inference_time_ms"] | 0;
+  String catEn   = classifyDoc["result"]["waste_category"] | "other";
 
   cls();
+
+  // Status bar at top
+  int rssi = WiFi.RSSI();
+  drawSignalBars(2, 1, rssi);
+  char rssiBuf[16];
+  snprintf(rssiBuf, sizeof(rssiBuf), "%ddBm", rssi);
+  tft.setCursor(24, 1);
+  tft.setTextSize(1);
+  tft.setTextColor(C_DARKGREY);
+  tft.print(rssiBuf);
+  txt(98, 1, 1, C_DARKGREY, "SORT");
+
+  tft.drawFastHLine(0, 11, 128, 0x2965);
+
   int pct = (int)(conf * 100);
-  uint16_t cc;
-  if (pct >= 80)      cc = C_GREEN;
-  else if (pct >= 50) cc = C_YELLOW;
-  else                cc = C_RED;
 
-  txt(0, 2, 2, C_CYAN, "RESULT");
-
-  const char* s = itemEn.c_str();
-  int l = strlen(s);
-  if (l <= 10) {
-    txt(0, 22, 2, C_WHITE, s);
+  // Map category to display label, color, and icon-ish representation
+  const char* catLabel;
+  uint16_t darkBg;
+  if (catEn == "kitchen") {
+    catLabel = "KITCHEN";
+    darkBg = 0x04D0;
+  } else if (catEn == "recyclable") {
+    catLabel = "RECYCLE";
+    darkBg = 0x2060;
+  } else if (catEn == "hazardous") {
+    catLabel = "HAZARD";
+    darkBg = 0x7800;
   } else {
-    String l1 = itemEn.substring(0, 14);
-    String l2 = itemEn.substring(14);
-    txt(0, 18, 1, C_WHITE, l1.c_str());
-    txt(0, 30, 1, C_WHITE, l2.c_str());
+    catLabel = "OTHER";
+    darkBg = 0x3984;
   }
 
-  tft.drawFastHLine(0, 46, 128, C_DARKGREY);
+  // Category card — large, centered
+  tft.fillRoundRect(4, 18, 120, 92, 10, darkBg);
+  tft.drawRoundRect(4, 18, 120, 92, 10, C_WHITE);
 
-  num(0, 50, 3, cc, pct);
-  txt(40, 52, 2, cc, "%");
+  // Category label in large font
+  int clen = strlen(catLabel);
+  int cw = clen * 18;  // textSize 3 = ~18px per char
+  int cx = (128 - cw) / 2;
+  if (cx < 4) cx = 4;
+  txt(cx, 30, 3, C_WHITE, catLabel);
 
-  int barW = map(pct, 0, 100, 0, 118);
-  tft.drawRect(0, 80, 120, 10, C_WHITE);
-  tft.fillRect(1, 81, barW, 8, cc);
+  // Confidence percentage below
+  char pctBuf[8];
+  snprintf(pctBuf, sizeof(pctBuf), "%d%%", pct);
+  int pctX = (128 - strlen(pctBuf) * 24) / 2;  // textSize 2 = ~12px per char
+  tft.setCursor(pctX, 66);
+  tft.setTextSize(2);
+  tft.setTextColor(C_WHITE);
+  tft.print(pctBuf);
 
-  if (pct >= 80)
-    txt(0, 96, 1, C_GREEN, "HIGH");
-  else if (pct >= 50)
-    txt(0, 96, 1, C_YELLOW, "MED");
-  else
-    txt(0, 96, 1, C_RED, "LOW");
+  // Thin confidence bar
+  tft.drawRoundRect(20, 90, 88, 8, 4, C_WHITE);
+  int barW = map(pct, 0, 100, 0, 80);
+  if (barW > 0) {
+    tft.fillRoundRect(24, 93, barW, 3, 2, C_WHITE);
+  }
 
-  int convMs  = (int)(t1 - t0);
-  int totalMs  = (int)(t2 - t0);
-  // Network time = total round-trip minus server inference time
-  int netMs = totalMs - convMs - inferMs;
-  if (netMs < 0) netMs = 0;
+  // Timing line
+  tft.drawFastHLine(0, 120, 128, 0x2965);
 
   char buf[30];
-  snprintf(buf, sizeof(buf), "Cv%d.%d N%d.%d I%d.%d",
+  snprintf(buf, sizeof(buf), "T %d.%ds  I %dms",
+           totalMs / 1000, (totalMs % 1000) / 100, inferMs);
+  txt(4, 124, 1, C_DARKGREY, buf);
+
+  snprintf(buf, sizeof(buf), "C %d.%d  N %d.%d",
            convMs / 1000, (convMs % 1000) / 100,
-           netMs / 1000, (netMs % 1000) / 100,
-           inferMs / 1000, (inferMs % 1000) / 100);
-  txt(0, 110, 1, C_DARKGREY, buf);
+           netMs / 1000, (netMs % 1000) / 100);
+  txt(4, 134, 1, C_DARKGREY, buf);
 
-  snprintf(buf, sizeof(buf), "T%d.%ds TOF",
-           totalMs / 1000, (totalMs % 1000) / 100);
-  txt(0, 122, 1, C_DARKGREY, buf);
-
-  txt(0, 136, 1, C_DARKGREY, modelUs.c_str());
+  // Model name
+  txt(4, 148, 1, 0x7BEF, modelUs.c_str());
 
   free(jpgBuf);
   return true;
 }
 
 // ==============================
-// 画面
+// Apple Watch 风格显示
 // ==============================
+
 void drawBoot() {
   cls();
-  txt(0, 5, 3, C_GREEN, "ESP32-S3");
-  txt(0, 45, 2, C_WHITE, "Garbage");
-  txt(0, 64, 2, C_WHITE, "Classifier");
-  tft.drawFastHLine(0, 80, 128, C_DARKGREY);
+  // Minimal boot: small text, thin line, subtle
+  tft.fillScreen(C_BLACK);
+  txt(18, 30, 2, C_WHITE, "ESP32-S3");
+  txt(44, 55, 1, C_DARKGREY, "Garbage");
+  txt(44, 65, 1, C_DARKGREY, "Classifier");
+  tft.drawFastHLine(20, 82, 88, C_DARKGREY);
+  txt(48, 88, 1, C_DARKGREY, "v5.3.0");
 }
 
-// ---- Incremental screen draw helpers ----
-
-void drawReadyTOF() {
-  // Only redraw the TOF reading display area
-  int dist = readTOF();
-  tft.fillRect(0, 82, 128, 30, C_BLACK);
-  txt(0, 82, 1, C_DARKGREY, "TOF:");
-  if (dist >= 0) {
-    num(28, 82, 1, C_GREEN, dist);
-    txt(52, 82, 1, C_DARKGREY, "mm");
-    if (dist >= distanceMin && dist <= distanceMax) {
-      txt(0, 96, 1, C_GREEN, "IN RANGE");
-    } else {
-      txt(0, 96, 1, C_DARKGREY, "waiting...");
-    }
-  } else {
-    txt(28, 82, 1, C_RED, "---");
-    txt(0, 96, 1, C_DARKGREY, "no target");
+void drawSignalBars(int x, int y, int rssi) {
+  int level = (rssi > -50) ? 4 : (rssi > -65) ? 3 : (rssi > -80) ? 2 : 1;
+  uint16_t color = (level >= 3) ? C_GREEN : (level >= 2) ? C_YELLOW : C_RED;
+  for (int i = 0; i < 4; i++) {
+    int bx = x + i * 5;
+    int bh = 3 + i * 2;
+    tft.fillRect(bx, y + 7 - bh, 3, bh, i < level ? color : 0x39E7);
   }
 }
 
+// ---- Ready Screen: 大数字距离显示 + 状态概览 ----
+// Layout (128x160):
+//   y0..11   ▄▄▄▄ -45dBm           Ready
+//   y12      ─────────────────────
+//   y18..94  ┌─ TOF Card ─────────┐
+//            │     127             │  font 5 centered
+//            │     mm              │  unit
+//            │   ┌──────────┐     │
+//            │   │ IN RANGE │     │  pill
+//            │   └──────────┘     │
+//            │ Range: 30-300mm    │
+//            │ ───── ──────       │
+//            └────────────────────┘
+//   y100..118 Config: cooldown, interval
+//   y120     ─────────────────────
+//   y124..138 Stats line: Auto · WiFi · Server
+//   y142..156 Status dots
+
+void drawReadyTOF() {
+  // Update just the TOF reading + status pill (inside the card).
+  // Does NOT draw the card outline — caller (drawReadyAll) draws it once.
+  int dist = readTOF();
+  // Clear the inner area of the TOF card (y=34..95)
+  tft.fillRoundRect(8, 34, 112, 65, 6, C_BLACK);
+
+  if (dist >= 0) {
+    // Big distance number
+    char buf[8];
+    snprintf(buf, sizeof(buf), "%d", dist);
+    int nx = (128 - strlen(buf) * 30) / 2;  // font 5 = 30px wide
+    if (nx < 4) nx = 4;
+    tft.setCursor(nx, 40);
+    tft.setTextSize(5);
+    tft.setTextColor(C_WHITE);
+    tft.print(buf);
+
+    // mm unit
+    txt(56, 80, 1, C_DARKGREY, "mm");
+
+    // Status pill
+    bool inRange = (dist >= distanceMin && dist <= distanceMax);
+    uint16_t bg = inRange ? 0x04D0 : 0x3984;  // green-tinted or grey
+    uint16_t fg = inRange ? C_GREEN : C_DARKGREY;
+    const char* status = inRange ? "IN RANGE" : "waiting";
+    int pillW = strlen(status) * 6 + 16;
+    int pillX = (128 - pillW) / 2;
+    tft.fillRoundRect(pillX, 56, pillW, 14, 7, bg);
+    tft.setCursor(pillX + 8, 58);
+    tft.setTextSize(1);
+    tft.setTextColor(fg);
+    tft.print(status);
+  } else {
+    txt(36, 42, 4, C_DARKGREY, "--");
+    txt(52, 76, 1, C_DARKGREY, "mm");
+    tft.fillRoundRect(36, 54, 56, 14, 7, 0x3984);
+    txt(44, 56, 1, C_DARKGREY, "no tgt");
+  }
+}
+
+int lastDrawnRssi = -128;  // RSSI cache for skip-redraw optimization in drawReadyWiFi
+
 void drawReadyWiFi() {
-  // Only redraw the WiFi RSSI line
+  // Update WiFi status bar (y=0..10) — skip if RSSI hasn't changed materially
   int rssi = WiFi.RSSI();
-  tft.fillRect(0, 116, 128, 12, C_BLACK);
-  tft.setCursor(0, 116);
+  if (abs(rssi - lastDrawnRssi) < 10) return;
+  lastDrawnRssi = rssi;
+  tft.fillRect(0, 0, 128, 11, C_BLACK);
+
+  // Signal bars
+  drawSignalBars(2, 1, rssi);
+
+  // RSSI text
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%ddBm", rssi);
+  uint16_t rssiColor = (rssi > -60) ? C_GREEN : (rssi > -75) ? C_YELLOW : C_RED;
+  tft.setCursor(24, 1);
   tft.setTextSize(1);
-  tft.setTextColor(rssi > -60 ? C_GREEN : rssi > -75 ? C_YELLOW : C_RED);
-  tft.print("WiFi ");
-  tft.print(rssi);
-  tft.print("dBm");
+  tft.setTextColor(rssiColor);
+  tft.print(buf);
+
+  // Right side: "Ready" dot
+  tft.fillCircle(110, 5, 3, C_GREEN);
+  txt(116, 1, 1, C_DARKGREY, "OK");
 }
 
 void drawReadyConfig() {
-  // Redraw only the config parameters area and trigger mode label
-  tft.fillRect(0, 20, 128, 60, C_BLACK);
-  txt(0, 20, 1, C_CYAN, "Auto (TOF)");
-  txt(0, 34, 1, C_DARKGREY, "Range:");
-  num(42, 34, 1, C_WHITE, distanceMin);
-  txt(0, 46, 1, C_DARKGREY, "  -");
-  num(20, 46, 1, C_WHITE, distanceMax);
-  txt(46, 46, 1, C_DARKGREY, "mm");
-  txt(0, 58, 1, C_DARKGREY, "Buf:");
-  num(26, 58, 1, C_WHITE, cooldownMs);
-  txt(54, 58, 1, C_DARKGREY, "ms");
-  txt(0, 68, 1, C_DARKGREY, "Int:");
-  num(26, 68, 1, C_WHITE, triggerIntervalMs / 1000);
-  txt(38, 68, 1, C_DARKGREY, "s");
-
-  // Trigger mode label
-  tft.fillRect(0, 130, 128, 10, C_BLACK);
-  tft.setCursor(0, 130);
+  // Config info at bottom of card (y=72..95)
+  tft.fillRect(2, 72, 124, 28, C_BLACK);
   tft.setTextSize(1);
   tft.setTextColor(C_DARKGREY);
-  tft.print("Trig:Auto");
+  tft.setCursor(10, 74);
+  tft.print("Range: ");
+  tft.setTextColor(C_WHITE);
+  tft.print(distanceMin);
+  tft.print("-");
+  tft.print(distanceMax);
+  tft.setTextColor(C_DARKGREY);
+  tft.println("mm");
+
+  tft.setCursor(10, 84);
+  tft.setTextColor(C_DARKGREY);
+  tft.print("Buf: ");
+  tft.setTextColor(C_WHITE);
+  tft.print(cooldownMs);
+  tft.setTextColor(C_DARKGREY);
+  tft.print("ms");
+  tft.setCursor(66, 84);
+  tft.print("Int: ");
+  tft.setTextColor(C_WHITE);
+  tft.print(triggerIntervalMs / 1000);
+  tft.setTextColor(C_DARKGREY);
+  tft.print("s");
 }
 
 void drawReadyAll() {
-  // Full redraw
+  // Full ready screen draw: delegate reusable sections to incremental helpers
   cls();
-  txt(0, 0, 2, C_WHITE, "Ready");
 
-  txt(0, 20, 1, C_CYAN, "Auto (TOF)");
-  txt(0, 34, 1, C_DARKGREY, "Range:");
-  num(42, 34, 1, C_WHITE, distanceMin);
-  txt(0, 46, 1, C_DARKGREY, "  -");
-  num(20, 46, 1, C_WHITE, distanceMax);
-  txt(46, 46, 1, C_DARKGREY, "mm");
-  txt(0, 58, 1, C_DARKGREY, "Buf:");
-  num(26, 58, 1, C_WHITE, cooldownMs);
-  txt(54, 58, 1, C_DARKGREY, "ms");
-  txt(0, 68, 1, C_DARKGREY, "Int:");
-  num(26, 68, 1, C_WHITE, triggerIntervalMs / 1000);
-  txt(38, 68, 1, C_DARKGREY, "s");
+  drawReadyWiFi();
 
-  int dist = readTOF();
-  txt(0, 82, 1, C_DARKGREY, "TOF:");
-  if (dist >= 0) {
-    num(28, 82, 1, C_GREEN, dist);
-    txt(52, 82, 1, C_DARKGREY, "mm");
-    if (dist >= distanceMin && dist <= distanceMax) {
-      txt(0, 96, 1, C_GREEN, "IN RANGE");
-    } else {
-      txt(0, 96, 1, C_DARKGREY, "waiting...");
-    }
-  } else {
-    txt(28, 82, 1, C_RED, "---");
-    txt(0, 96, 1, C_DARKGREY, "no target");
-  }
+  // === y12: Hairline ===
+  tft.drawFastHLine(0, 11, 128, 0x2965);
 
-  // WiFi status
-  int rssi = WiFi.RSSI();
-  tft.setCursor(0, 116);
+  // === y18-95: TOF Card (only outline — inner content drawn by drawReadyTOF) ===
+  tft.drawRoundRect(8, 18, 112, 82, 8, 0x2965);
+  drawReadyTOF();
+  drawReadyConfig();
+
+  // === y122-138: Bottom status lines ===
+  tft.drawFastHLine(0, 120, 128, 0x2965);
+
+  // Trigger mode
+  tft.fillCircle(10, 128, 3, C_CYAN);
+  txt(16, 124, 1, C_CYAN, "Auto");
+  txt(48, 124, 1, C_DARKGREY, "TOF");
+
+  // Server status
+  tft.fillCircle(90, 128, 3, serverReachable ? C_GREEN : 0x7BEF);
+  txt(96, 124, 1, serverReachable ? C_GREEN : C_DARKGREY, serverReachable ? "Srv OK" : "Srv ?");
+
+  // Firmware version at bottom
   tft.setTextSize(1);
-  tft.setTextColor(rssi > -60 ? C_GREEN : rssi > -75 ? C_YELLOW : C_RED);
-  tft.print("WiFi ");
-  tft.print(rssi);
-  tft.print("dBm");
-
-  // Trigger mode label
-  tft.setCursor(0, 130);
-  tft.setTextSize(1);
-  tft.setTextColor(C_DARKGREY);
-  tft.print("Trig:Auto");
+  tft.setTextColor(0x7BEF);
+  tft.setCursor(10, 150);
+  tft.print("Ready");
+  tft.setCursor(84, 150);
+  tft.print("v5.3.0");
 }
 
 // ==============================
@@ -838,31 +964,31 @@ void setup() {
   tft.setRotation(0);
   tft.invertDisplay(false);
 
-  tft.fillScreen(C_RED);    delay(400);
-  tft.fillScreen(C_GREEN);  delay(400);
-  tft.fillScreen(C_BLUE);   delay(400);
-  cls();
+  // Power-on animation: subtle fade-in
+  tft.fillScreen(C_BLACK);
+  delay(200);
 
   drawBoot();
 
-  bar("WiFi...");
+  // Init steps with clean cards
+  tft.fillRoundRect(8, 106, 112, 28, 6, 0x2965);
+  txt(14, 112, 1, C_YELLOW, "WiFi...");
   if (!wifiConnect()) { err("WiFi FAIL"); while(1) delay(1000); }
 
   drawBoot();
-  txt(0, 83, 1, C_GREEN, "WiFi OK");
-  txt(0, 93, 1, C_WHITE, WiFi.localIP().toString().c_str());
+  tft.fillRoundRect(8, 70, 112, 70, 6, 0x2965);
+  txt(14, 76, 1, C_GREEN, "WiFi OK");
+  txt(14, 90, 1, C_WHITE, WiFi.localIP().toString().c_str());
 
-  bar("Camera...");
+  txt(14, 108, 1, C_YELLOW, "Camera...");
   if (!cameraInit()) { err("Cam FAIL"); while(1) delay(1000); }
-  txt(0, 105, 1, C_GREEN, "Camera OK");
+  txt(14, 108, 1, C_GREEN, "Camera OK");
 
-  bar("TOF...");
-  if (tofInit()) txt(0, 118, 1, C_GREEN, "TOF OK");
-  else          txt(0, 118, 1, C_YELLOW, "TOF ?");
+  txt(14, 120, 1, tofInit() ? C_GREEN : C_YELLOW, "TOF");
+  if (!tofInit()) txt(48, 120, 1, C_YELLOW, "?");
 
-  bar("Server...");
-  if (serverHealth()) txt(0, 130, 1, C_GREEN, "Server OK");
-  else                txt(0, 130, 1, C_YELLOW, "Server ?");
+  txt(14, 132, 1, serverHealth() ? C_GREEN : C_YELLOW, "Server");
+  if (!serverHealth()) txt(66, 132, 1, C_YELLOW, "?");
 
   // 拉取触发配置（错开心跳和配置拉取的首次触发时间）
   sendHeartbeat();
@@ -873,13 +999,26 @@ void setup() {
   delay(1500);
   firstBoot = false;
   drawReadyAll();
+  lastReadyMs = millis();
 }
 
 // ==============================
 // loop — 按钮触发 / TOF 距离触发
+// 屏幕安全看门狗：30 秒无待机刷新 → 强制复位所有状态
 // ==============================
 void loop() {
   unsigned long now = millis();
+  // 屏幕看门狗判定：卡在结果页面超过 30s 则强制复位
+  // (postCaptureUntil > 0 表示 captureAndClassify 执行后尚未回落)
+  if (postCaptureUntil > 0 && !firstBoot && now - lastReadyMs > 30000) {
+    presenceStart = 0;
+    waitingDistanceClear = false;
+    postCaptureUntil = 0;
+    lastCountdownSec = -1;
+    configChanged = false;
+    drawReadyAll();
+    lastReadyMs = millis();
+  }
 
   // === 后端 TCP 存活性检测 ===
   // 即使 WiFi 已连接，后端也可能不可达
@@ -905,22 +1044,30 @@ void loop() {
     drawReadyConfig();
   }
 
-  if (postCaptureUntil > now) {
-    int secLeft = (int)((postCaptureUntil - now + 999) / 1000);
-    if (secLeft != lastCountdownSec) {
-      lastCountdownSec = secLeft;
-      tft.fillRect(0, 140, 128, 20, C_BLACK);
-      tft.setCursor(42, 144);
-      tft.setTextSize(1);
-      tft.setTextColor(C_DARKGREY);
-      tft.print(secLeft);
-      tft.print("s...");
+  // === 采集后等待期 ===
+  // captureAndClassify() 执行完后会显示结果页，停留 n 秒后自动退出
+  if (postCaptureUntil > 0) {
+    if (now < postCaptureUntil) {
+      // postCaptureUntil 未到期 → 显示倒计时（仅在结果页覆盖 bar 区域）
+      int secLeft = (int)((postCaptureUntil - now + 999) / 1000);
+      if (secLeft != lastCountdownSec) {
+        lastCountdownSec = secLeft;
+        tft.fillRect(0, 138, 128, 22, C_BLACK);
+        tft.drawRoundRect(38, 140, 52, 18, 5, 0x2965);
+        tft.setCursor(50, 143);
+        tft.setTextSize(1);
+        tft.setTextColor(C_DARKGREY);
+        tft.print(secLeft);
+        tft.print("s");
+      }
+      delay(10);
+      return;
     }
-    delay(10);
-    return;
-  } else if (lastCountdownSec != -1) {
+    // postCaptureUntil 到期 → 回落待机（但仍等待物体移开，防止重复触发）
+    postCaptureUntil = 0;
     lastCountdownSec = -1;
     drawReadyAll();
+    lastReadyMs = millis();
   }
 
   if (triggerMode == "distance") {
@@ -939,38 +1086,55 @@ void loop() {
       drawReadyWiFi();
     }
 
+    // 等待物体移开（触发后保护期）
     if (waitingDistanceClear) {
       if (dist < distanceMin || dist > distanceMax || now > distanceClearDeadline) {
         waitingDistanceClear = false;
         drawReadyAll();
+        lastReadyMs = millis();
       }
       delay(10);
       return;
     }
 
+    // 物体进入触发范围
     if (dist >= distanceMin && dist <= distanceMax) {
       if (presenceStart == 0) {
         presenceStart = now;
-        tft.fillRect(0, 112, 128, 10, C_BLACK);
-        txt(0, 112, 1, C_GREEN, "Item detected");
+        tft.fillRect(0, 100, 128, 20, C_BLACK);
+        tft.fillCircle(10, 108, 3, C_GREEN);
+        txt(16, 104, 1, C_GREEN, "Detected");
       }
 
-      // 显示倒计时
+      // 显示触发前倒计时（cooldown）
       unsigned long elapsed = now - presenceStart;
       if (elapsed < (unsigned long)cooldownMs && now - lastTrigger > (unsigned long)triggerIntervalMs) {
         int secLeft = ((unsigned long)cooldownMs - elapsed) / 1000 + 1;
-        tft.fillRect(60, 112, 68, 20, C_BLACK);
-        num(80, 112, 1, C_YELLOW, secLeft);
-        txt(92, 112, 1, C_YELLOW, "s");
+        tft.fillRect(80, 100, 48, 20, C_BLACK);
+        char cd[8];
+        snprintf(cd, sizeof(cd), "%ds", secLeft);
+        tft.setCursor(82, 105);
+        tft.setTextSize(1);
+        tft.setTextColor(C_YELLOW);
+        tft.print(cd);
       }
 
-      // 稳定超过缓冲时间 → 触发拍照
+      // 稳定超过缓冲时间 → 触发拍照（但跳过如果在触发间隔内）
       if (elapsed >= (unsigned long)cooldownMs && now - lastTrigger > (unsigned long)triggerIntervalMs) {
         lastTrigger = now;
         presenceStart = 0;
 
-        bar("Auto capture!");
+        cls();
+        tft.drawRoundRect(24, 60, 80, 40, 10, C_CYAN);
+        txt(30, 72, 1, C_CYAN, "Auto Capture");
+        delay(800);
+
+        // 执行拍照分类（内部可能显示 error 或 result 页）
         captureAndClassify();
+
+        // 无论 captureAndClassify 成功与否，都进入等待期
+        // 成功 → 显示 result 页 + 倒计时；失败 → 显示 error 页 + 倒计时
+        // 两者都通过看门狗（30s）或定时回落回到待机
         postCaptureUntil = millis() + 5000;
         lastCountdownSec = -1;
         waitingDistanceClear = true;
@@ -981,8 +1145,9 @@ void loop() {
         lastConfigFetch = millis();
       }
     } else {
+      // 物体不在触发范围
       if (presenceStart != 0) {
-        tft.fillRect(0, 112, 128, 20, C_BLACK);
+        tft.fillRect(0, 100, 128, 20, C_BLACK);
       }
       presenceStart = 0;
     }

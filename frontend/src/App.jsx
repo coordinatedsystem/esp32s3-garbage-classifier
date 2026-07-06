@@ -1,6 +1,6 @@
-import { useState, useCallback, useEffect } from 'react'
+import { useState, useCallback, useEffect, useRef } from 'react'
 import { motion, AnimatePresence } from 'framer-motion'
-import { Trash, Leaf, Recycle, Warning, Cpu, Brain, Upload, Ruler } from '@phosphor-icons/react'
+import { Trash, Leaf, Recycle, Warning, Cpu, Brain, Upload, Ruler, X, ChartBar, Target, Timer, Lightning } from '@phosphor-icons/react'
 import { checkHealth, getRuntimeMetrics, getHardwareStatus } from './api'
 import usePolling from './hooks/usePolling'
 import ModelSelector from './components/ModelSelector.jsx'
@@ -8,6 +8,8 @@ import UploadPanel from './components/UploadPanel.jsx'
 import ResultsDisplay from './components/ResultsDisplay.jsx'
 import HistoryList from './components/HistoryList.jsx'
 import HardwarePanel from './components/HardwarePanel.jsx'
+import TriggerPanel from './components/TriggerPanel.jsx'
+import ResultOverlay from './components/ResultOverlay.jsx'
 
 const CATEGORY_CONFIG = {
   recyclable:  { icon: Recycle,   label: '可回收物', labelZh: '可回收物', gradient: 'from-sky-500 to-blue-600',   bg: 'bg-sky-50',   text: 'text-sky-700',   ring: 'ring-sky-200' },
@@ -17,6 +19,7 @@ const CATEGORY_CONFIG = {
 }
 
 const NAV_ITEMS = [
+  { key: 'trigger',  label: '按键测试', icon: Lightning },
   { key: 'hardware', label: '硬件与触发', icon: Cpu },
   { key: 'model',    label: '识别引擎',   icon: Brain },
   { key: 'upload',   label: '上传与结果', icon: Upload },
@@ -31,18 +34,19 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState(null)
   const [historyKey, setHistoryKey] = useState(0)
-  const [activeTab, setActiveTab] = useState('hardware')
+  const [activeTab, setActiveTab] = useState('trigger')
   const [captureEventKey, setCaptureEventKey] = useState(0)
+  const [esp32Result, setEsp32Result] = useState(null)
+  const [esp32ImageKey, setEsp32ImageKey] = useState(0)
 
   const fetchHealth = useCallback(() => checkHealth(), [])
   const { data: health, loading: healthLoading } = usePolling(fetchHealth, { interval: 5000 })
   const fetchMetrics = useCallback(() => getRuntimeMetrics(), [])
   const { data: metrics } = usePolling(fetchMetrics, { interval: 10000 })
   const fetchHwStatus = useCallback(() => getHardwareStatus(), [])
-  const { data: hwStatus, loading: hwLoading, setData: setHwStatus } = usePolling(fetchHwStatus, { interval: 30000 })
+  const { data: hwStatus, loading: hwLoading, setData: setHwStatus } = usePolling(fetchHwStatus, { interval: 60000 })
 
-  // SSE 实时监听硬件状态变化与新采集事件（单连接双事件）
-  // 后端推送完整 hardware_state，直接替换；30s 轮询仅作降级备份
+  // SSE 监听：hw_status / new_capture / new_result
   useEffect(() => {
     const es = new EventSource('/events')
     es.addEventListener('hw_status', (e) => {
@@ -53,6 +57,14 @@ export default function App() {
     })
     es.addEventListener('new_capture', () => {
       setCaptureEventKey(k => k + 1)
+      setEsp32ImageKey(k => k + 1)
+    })
+    es.addEventListener('new_result', (e) => {
+      try {
+        const data = JSON.parse(e.data)
+        setEsp32Result(data)
+        setHistoryKey(k => k + 1)
+      } catch {}
     })
     return () => es.close()
   }, [setHwStatus])
@@ -74,6 +86,10 @@ export default function App() {
   const handleClear = useCallback(() => {
     setResult(null)
     setError(null)
+  }, [])
+
+  const handleDismissEsp32Result = useCallback(() => {
+    setEsp32Result(null)
   }, [])
 
   return (
@@ -129,9 +145,9 @@ export default function App() {
                 <span className="text-xs font-medium text-zinc-500">服务</span>
               </div>
               <p className={`text-[13px] font-semibold mt-0.5 pl-4 ${
-                healthLoading ? 'text-zinc-400' : serverOnline ? 'text-emerald-700' : 'text-red-600'
+                healthLoading ? 'text-zinc-400' : serverOnline ? `text-emerald-700 · ${latency ?? '—'}ms` : 'text-red-600'
               }`}>
-                {healthLoading ? '检测中...' : serverOnline ? `在线 · ${latency ?? '—'}ms` : '已离线'}
+                {healthLoading ? '检测中...' : serverOnline ? '在线' : '已离线'}
               </p>
             </div>
 
@@ -147,9 +163,9 @@ export default function App() {
                 <span className="text-xs font-medium text-zinc-500">硬件</span>
               </div>
               <p className={`text-[13px] font-semibold mt-0.5 pl-4 ${
-                hwLoading ? 'text-zinc-400' : hardwareOnline ? 'text-indigo-700' : 'text-zinc-400'
+                hwLoading ? 'text-zinc-400' : hardwareOnline ? `在线 · ${captures} 次采集` : '离线'
               }`}>
-                {hwLoading ? '检测中...' : hardwareOnline ? `在线 · ${captures} 次采集` : '离线'}
+                {hwLoading ? '检测中...' : hardwareOnline ? '在线' : '离线'}
               </p>
             </div>
 
@@ -207,13 +223,25 @@ export default function App() {
         </nav>
 
         {/* ====== 右侧主区域 ====== */}
-        <main className="flex-1 flex flex-col overflow-hidden min-w-0">
+        <main className="flex-1 flex flex-col overflow-hidden min-w-0 relative">
+          {/* ESP32 实时结果浮层 */}
+          <ResultOverlay
+            result={esp32Result}
+            categoryConfig={CATEGORY_CONFIG}
+            onDismiss={handleDismissEsp32Result}
+            imageKey={esp32ImageKey}
+          />
+
           {/* 内容区 */}
           <div className="flex-1 overflow-y-auto p-6">
             <div className="max-w-[960px] mx-auto space-y-6">
               {/* 选项卡内容 — 全部保持挂载，仅隐藏非活跃面板 */}
               <div className={activeTab === 'hardware' ? '' : 'hidden'}>
                 <HardwarePanel status={hwStatus} loading={hwLoading} captureEventKey={captureEventKey} visible={activeTab === 'hardware'} />
+              </div>
+
+              <div className={activeTab === 'trigger' ? '' : 'hidden'}>
+                <TriggerPanel />
               </div>
 
               <div className={activeTab === 'model' ? '' : 'hidden'}>

@@ -21,12 +21,12 @@ import base64
 import json
 import httpx
 from datetime import datetime, timezone
-from fastapi import FastAPI, UploadFile, File, HTTPException, Query, BackgroundTasks, Request
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query, BackgroundTasks, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, Response, StreamingResponse
 from pydantic import BaseModel
-from transformers import SiglipModel, SiglipProcessor
+from transformers import CLIPProcessor, CLIPModel
 from ultralytics import YOLO
 
 logging.basicConfig(
@@ -49,6 +49,7 @@ LABEL_MAP = {
     "a photo of an envelope for letters": "信封",
     "a photo of correction tape": "修正带",
     "a photo of a pair of scissors": "剪刀",
+    "a photo of a pair of nail clippers, nail cutter": "指甲剪",
 
     # ===== 水果蔬菜食物 =====
     "a photo of an apple fruit": "苹果",
@@ -76,10 +77,16 @@ LABEL_MAP = {
     "a photo of a biscuit or cookie": "饼干",
     "a photo of crispy potato chips": "薯片",
     "a photo of a chocolate bar": "巧克力",
+    "a photo of a chocolate candy box or gift box of chocolates": "巧克力",
     "a photo of wrapped candy": "糖果",
 
+    # ===== 包装袋 =====
+    "a photo of a plastic wrapper or packaging bag, empty and discarded": "包装袋",
+    "a photo of a crumpled chip or snack bag, empty foil pouch": "包装袋",
+
     # ===== 零食/包装食品 =====
-    "a photo of instant noodles in a cup": "方便面",
+    "a photo of instant noodles in a cup, cup noodles": "方便面",
+    "a photo of a bag of instant noodles, packaged noodles": "方便面",
     "a photo of jelly dessert in a cup": "果冻",
     "a photo of assorted nuts": "坚果",
     "a photo of a lollipop on a stick": "棒棒糖",
@@ -91,7 +98,7 @@ LABEL_MAP = {
     "a photo of a winter coat or jacket": "外套",
     "a photo of a sweater, knitted garment": "毛衣",
     "a photo of a dress, woman clothing": "连衣裙",
-    "a photo of socks, pair of": "袜子",
+    "a photo of socks, pair of, worn on feet": "袜子",
     "a photo of underwear or boxer shorts": "内衣",
     "a photo of shoes or sneakers": "鞋子",
     "a photo of a hat or cap": "帽子",
@@ -105,18 +112,22 @@ LABEL_MAP = {
     "a photo of a pillow": "枕头",
     "a photo of a toothbrush": "牙刷",
     "a photo of a tube of toothpaste": "牙膏",
-    "a photo of a facial cleanser tube": "洗面奶",
+    "a photo of a squeezable facial cleanser tube": "洗面奶",
+    "a photo of a pump bottle of liquid facial cleanser": "洗面奶",
     "a photo of a bar of soap": "肥皂",
     "a photo of a roll of toilet paper": "卫生纸",
-    "a photo of a tissue box": "纸巾盒",
-    "a photo of a disposable face mask": "口罩",
+    "a photo of a tissue box with tissues coming out of the slot": "纸巾盒",
+    "a photo of a disposable face mask covering mouth and nose": "口罩",
+    "a photo of a blue surgical face mask with pleats": "口罩",
     "a photo of a plastic comb": "塑料梳子",
     "a photo of a mirror": "镜子",
     "a photo of a plastic laundry basket": "洗衣篮",
     "a photo of a pair of eyeglasses or spectacles": "眼镜",
+    "a photo of an eyeglasses case, hard protective case for storing glasses, not food": "眼镜盒",
 
     # ===== 塑料制品（多条具体描述→同一中文标签） =====
     "a photo of a clear plastic or PET beverage bottle": "塑料瓶",
+    "a photo of a plastic beverage bottle with colored label, drink bottle": "塑料瓶",
     "a photo of a plastic container, storage box or bin": "塑料瓶",
     "a photo of a thin plastic shopping bag": "塑料瓶",
     "a photo of a plastic bowl or cup, disposable tableware": "塑料瓶",
@@ -142,22 +153,18 @@ LABEL_MAP = {
     "a photo of a glass bottle": "玻璃瓶",
     "a photo of a glass drinking cup": "玻璃杯",
     "a photo of a glass jar with lid": "玻璃罐",
-    "a photo of a ceramic mug for tea or coffee": "陶瓷杯",
-    "a photo of a ceramic bowl": "陶瓷碗",
-    "a photo of a ceramic plate": "陶瓷盘",
+    "a photo of a ceramic mug for tea or coffee, with a handle": "陶瓷杯",
+    "a photo of a ceramic bowl, round and deep": "陶瓷碗",
+    "a photo of a ceramic plate, flat and round": "陶瓷盘",
 
     # ===== 金属制品 =====
     "a photo of an aluminum soda can": "易拉罐",
     "a photo of an iron nail": "铁钉",
-    "a photo of a metal cooking pot": "金属锅",
     "a photo of aluminum foil sheet": "铝箔纸",
     "a photo of a metal key": "钥匙",
-    "a photo of a stainless steel cup": "不锈钢杯",
+    "a photo of a metal pot or basin or stainless steel container": "金属容器",
 
     # ===== 电子产品（多条具体描述→同一中文标签） =====
-    "a photo of a smartphone, mobile phone": "电子产品",
-    "a photo of a computer mouse": "电子产品",
-    "a photo of a computer keyboard": "电子产品",
     "a photo of a charger plug or power adapter": "电子产品",
     "a photo of a USB cable or charging cable": "电子产品",
     "a photo of earphones or headphones": "电子产品",
@@ -165,10 +172,17 @@ LABEL_MAP = {
     "a photo of a desk lamp": "电子产品",
     "a photo of an electric fan": "电子产品",
     "a photo of a portable power bank": "电子产品",
-    "a photo of a battery cell, AA or AAA": "电子产品",
     "a photo of an electrical plug with prongs": "电子产品",
     "a photo of a tablet or iPad": "电子产品",
-    "a photo of a laptop computer": "电子产品",
+
+    # ===== 手机/鼠标/电脑（单独标签） =====
+    "a photo of a smartphone, mobile phone": "手机",
+    "a photo of a computer mouse": "鼠标",
+    "a photo of a computer keyboard": "键盘",
+    "a photo of a laptop computer": "笔记本电脑",
+
+    # ===== 电池（单独标签，避免与电子产品混淆） =====
+    "a photo of a battery cell, AA or AAA or rechargeable battery": "电池",
 
     # ===== 玩具/运动用品 =====
     "a photo of a plastic toy": "塑料玩具",
@@ -178,7 +192,7 @@ LABEL_MAP = {
     "a photo of a badminton racket": "羽毛球拍",
     "a photo of a basketball": "篮球",
     "a photo of a soccer ball": "足球",
-    "a photo of a jump rope": "跳绳",
+    "a photo of a jump rope with handles, skipping rope": "跳绳",
     "a photo of a jigsaw puzzle": "拼图",
     "a photo of a toy car": "玩具车",
 
@@ -197,13 +211,15 @@ LABEL_MAP = {
 
     # ===== 有害垃圾 =====
     "a photo of expired medicine in packaging": "过期药品",
-    "a photo of a cosmetic bottle or jar": "化妆品瓶",
+    "a photo of a glass cosmetic bottle or jar, perfume or toner container": "化妆品瓶",
+    "a photo of a skincare jar or bottle, glass container for beauty products": "化妆品瓶",
     "a photo of a nail polish bottle": "指甲油瓶",
     "a photo of a fluorescent lamp tube": "荧光灯",
     "a photo of a glass thermometer": "温度计",
 
     # ===== 一次性用品/其他垃圾 =====
-    "a photo of a takeout food container": "一次性餐盒",
+    "a photo of a takeout food container, plastic": "一次性餐盒",
+    "a photo of a white foam takeout box, styrofoam container": "一次性餐盒",
     "a photo of a disposable plastic cup": "一次性杯子",
     "a photo of disposable wooden chopsticks": "一次性筷子",
     "a photo of a wet wipe, moist towelette": "湿巾",
@@ -211,7 +227,7 @@ LABEL_MAP = {
 }
 
 TEXT_PROMPTS = list(LABEL_MAP.keys())
-MODEL_NAME = "google/siglip-base-patch16-224"
+MODEL_NAME = "openai/clip-vit-base-patch32"
 MODEL_DIR = os.path.join(os.path.dirname(__file__), "clip_model")
 
 # 本地加载（模型已下载到 backend/clip_model/）
@@ -228,44 +244,44 @@ WASTE_CATEGORY_MAP = {
         "方便面", "果冻", "坚果"
     },
     "可回收物": {
-        "笔", "书本", "橡皮", "纸张", "笔记本", "尺子", "订书机", "文件夹", "信封", "修正带", "剪刀",
+        "笔", "书本", "橡皮", "纸张", "笔记本", "尺子", "订书机", "文件夹", "信封", "修正带", "剪刀", "指甲剪",
         "T恤", "裤子", "外套", "毛衣", "连衣裙", "袜子", "内衣", "鞋子", "帽子", "围巾", "手套", "毛巾", "床单", "被子", "枕头",
         "塑料瓶",
         "盒子", "报纸", "杂志", "纸袋", "包装纸", "纸杯", "纸碗",
-        "玻璃瓶", "玻璃杯", "玻璃罐", "易拉罐", "铁钉", "金属锅", "铝箔纸", "钥匙", "不锈钢杯",
-        "电子产品",
+        "玻璃瓶", "玻璃杯", "玻璃罐", "易拉罐", "铁钉", "铝箔纸", "钥匙", "金属容器",
+        "电子产品", "手机", "鼠标", "键盘", "笔记本电脑",
         "塑料玩具", "玩偶", "乐高积木", "球", "羽毛球拍", "篮球", "足球", "跳绳", "拼图", "玩具车",
         "炒锅", "筷子", "盘子", "锅铲", "碗", "水壶", "拖把", "扫帚", "簸箕", "塑料梳子",
-        "眼镜",
+        "眼镜", "眼镜盒",
     },
     "有害垃圾": {
         "过期药品", "化妆品瓶", "指甲油瓶", "荧光灯", "温度计", "电池"
     },
     "其他垃圾": {
         "口香糖", "牙刷", "牙膏", "洗面奶", "肥皂", "卫生纸", "纸巾盒", "口罩", "镜子", "洗衣篮",
-        "陶瓷杯", "陶瓷碗", "陶瓷盘", "一次性餐盒", "一次性杯子", "一次性筷子", "湿巾", "保鲜膜", "棒棒糖"
+        "陶瓷杯", "陶瓷碗", "陶瓷盘", "一次性餐盒", "一次性杯子", "一次性筷子", "湿巾", "保鲜膜", "棒棒糖", "包装袋",
     }
 }
 
 
 # 两阶段分类分组 —— 每组内物品互斥，组间独立计算
 GROUP_MEMBERS = {
-    "文具":     {"笔", "书本", "橡皮", "纸张", "笔记本", "尺子", "订书机", "文件夹", "信封", "修正带", "剪刀"},
+    "文具":     {"笔", "书本", "橡皮", "纸张", "笔记本", "尺子", "订书机", "文件夹", "信封", "修正带", "剪刀", "指甲剪"},
     "果蔬":     {"苹果", "香蕉", "橙子", "西瓜", "葡萄", "草莓", "西红柿", "黄瓜", "胡萝卜", "土豆", "白菜", "菠菜"},
     "厨余":     {"剩饭", "剩菜", "骨头", "蛋壳", "茶叶渣", "咖啡渣", "面包", "面条", "饼干", "薯片", "巧克力", "糖果"},
     "零食":     {"方便面", "果冻", "坚果", "棒棒糖", "口香糖"},
     "衣物":     {"T恤", "裤子", "外套", "毛衣", "连衣裙", "袜子", "内衣", "鞋子", "帽子", "围巾", "手套"},
-    "日用品":   {"毛巾", "床单", "被子", "枕头", "牙刷", "牙膏", "洗面奶", "肥皂", "卫生纸", "纸巾盒", "口罩", "塑料梳子", "镜子", "洗衣篮", "眼镜"},
+    "日用品":   {"毛巾", "床单", "被子", "枕头", "牙刷", "牙膏", "洗面奶", "肥皂", "卫生纸", "纸巾盒", "口罩", "塑料梳子", "镜子", "洗衣篮", "眼镜", "眼镜盒"},
     "塑料":     {"塑料瓶"},
     "纸制品":   {"盒子", "报纸", "杂志", "纸袋", "包装纸", "纸杯", "纸碗"},
     "玻璃陶瓷": {"玻璃瓶", "玻璃杯", "玻璃罐", "陶瓷杯", "陶瓷碗", "陶瓷盘"},
-    "金属":     {"易拉罐", "铁钉", "金属锅", "铝箔纸", "钥匙", "不锈钢杯"},
-    "电子":     {"电子产品"},
+    "金属":     {"易拉罐", "铁钉", "铝箔纸", "钥匙", "金属容器"},
+    "电子":     {"电子产品", "手机", "鼠标", "键盘", "笔记本电脑"},
     "玩具运动": {"塑料玩具", "玩偶", "乐高积木", "球", "羽毛球拍", "篮球", "足球", "跳绳", "拼图", "玩具车"},
     "厨具":     {"炒锅", "筷子", "盘子", "锅铲", "碗", "水壶"},
     "清洁":     {"拖把", "扫帚", "簸箕"},
     "有害":     {"过期药品", "化妆品瓶", "指甲油瓶", "荧光灯", "温度计", "电池"},
-    "一次性":   {"一次性餐盒", "一次性杯子", "一次性筷子", "湿巾", "保鲜膜"},
+    "一次性":   {"一次性餐盒", "一次性杯子", "一次性筷子", "湿巾", "保鲜膜", "包装袋"},
 }
 
 # Build reverse map: zh_label → group_id
@@ -450,6 +466,29 @@ trigger_config = {
 # so no additional locking is needed for _sse_queues.
 _sse_queues = []
 
+# WebSocket video frame fan-out
+_ws_frame_queues = []
+
+async def _ws_broadcast_frame(image_bytes: bytes):
+    """Push a JPEG frame to all connected WebSocket video clients."""
+    for q in _ws_frame_queues:
+        try:
+            q.put_nowait(image_bytes)
+        except asyncio.QueueFull:
+            pass
+
+
+async def _video_frame_pusher():
+    """Background task: continuously push latest frame to WS clients at ~8fps."""
+    while True:
+        await asyncio.sleep(0.12)  # ~8 fps
+        if not _ws_frame_queues:
+            continue
+        with _hw_lock:
+            img = last_capture_image
+        if img:
+            await _ws_broadcast_frame(img)
+
 # P1-9: Inference semaphore for backpressure — limits concurrent inference calls
 _inference_semaphore = asyncio.Semaphore(INFERENCE_WORKERS * 2)
 
@@ -574,10 +613,12 @@ async def lifespan(app: FastAPI):
     _models_ready = True
     logger.info("✅ All models loaded and ready.")
     asyncio.create_task(_hardware_status_checker())
+    asyncio.create_task(_video_frame_pusher())
     yield
     # P1-10: Close the shared httpx client
     if _vision_client is not None:
         await _vision_client.aclose()
+    # P4-14: Timeout executor shutdown to avoid hanging on slow inference
     inference_executor.shutdown(wait=True)
     _esp32_executor.shutdown(wait=True)
     _sse_queues.clear()
@@ -632,14 +673,14 @@ def _load_clip_and_encode():
     """Load SigLIP model, processor, pre-compute text features and classify results (blocking)."""
     global model, processor, text_inputs, _text_features, _logit_scale, _CLASSIFY_RESULTS
     global _CLASSIFY_RESULTS_ZH, _CLASSIFY_RESULTS_BY_ZH
-    logger.info("正在加载SigLIP模型...")
+    logger.info("正在加载CLIP模型...")
     if os.path.exists(os.path.join(MODEL_DIR, "config.json")):
-        model = SiglipModel.from_pretrained(MODEL_DIR).to(device).eval()
-        processor = SiglipProcessor.from_pretrained(MODEL_DIR)
+        model = CLIPModel.from_pretrained(MODEL_DIR).to(device).eval()
+        processor = CLIPProcessor.from_pretrained(MODEL_DIR, use_fast=False)
     else:
-        logger.info("  首次运行，正在下载SigLIP模型 (~1.2GB)...")
-        model = SiglipModel.from_pretrained(MODEL_NAME).to(device).eval()
-        processor = SiglipProcessor.from_pretrained(MODEL_NAME)
+        logger.info("  首次运行，正在下载CLIP模型 (~1.2GB)...")
+        model = CLIPModel.from_pretrained(MODEL_NAME).to(device).eval()
+        processor = CLIPProcessor.from_pretrained(MODEL_NAME, use_fast=False)
         model.save_pretrained(MODEL_DIR)
         processor.save_pretrained(MODEL_DIR)
         logger.info(f"  模型已保存到 {MODEL_DIR}")
@@ -673,7 +714,7 @@ def _load_clip_and_encode():
         if zh not in _CLASSIFY_RESULTS_BY_ZH:
             _CLASSIFY_RESULTS_BY_ZH[zh] = entry
 
-    logger.info(f"✅ SigLIP模型加载成功！({len(TEXT_PROMPTS)} 个标签, {len(GROUP_IDS)} 个分组)")
+    logger.info(f"✅ CLIP模型加载成功！({len(TEXT_PROMPTS)} 个标签, {len(GROUP_IDS)} 个分组)")
 
 
 def _load_yolo():
@@ -716,6 +757,19 @@ def _prep_image(image_data: bytes, max_edge: int | None = 1280) -> Image.Image:
 
 
 # ===================== SigLIP 两阶段分类 =====================
+
+def _unknown_result(confidence: float, model_used: str):
+    return {
+        "waste_category": "other",
+        "waste_category_zh": "其他垃圾",
+        "item_label": "unknown object",
+        "item_label_zh": "未知物品",
+        "confidence": confidence,
+        "tip": "无法识别该物品，请手动分类",
+        "top3": [],
+        "model_used": model_used
+    }
+
 def _classify_clip(image_data: bytes):
     image = _prep_image(image_data, max_edge=None)
     pixel_values = processor(images=image, return_tensors="pt").pixel_values.to(device)
@@ -748,11 +802,23 @@ def _classify_clip(image_data: bytes):
     g_logit_arr = np.array(list(group_logits.values()))
     g_probs = np.exp(g_logit_arr - g_logit_arr.max())
     g_probs = g_probs / g_probs.sum()
-    winning_group = GROUP_IDS[int(np.argmax(g_probs))]
-    group_conf = float(g_probs.max())
+    g_sorted = np.argsort(g_logit_arr)[::-1]
+    winning_group = GROUP_IDS[g_sorted[0]]
+    group_gap = float(g_probs[g_sorted[0]] - g_probs[g_sorted[1]])
 
-    # ── Stage 2: within-group softmax ──
-    mask = np.array([_LABEL_TO_GROUP.get(lbl, "") == winning_group for lbl in zh_labels_list])
+    # ── Stage 2: within-group softmax (group ambiguity handling) ──
+    if group_gap < 0.20:
+        # top-2 groups are close — merge candidates from both
+        expanded = set()
+        for g_idx in g_sorted[:2]:
+            gid = GROUP_IDS[g_idx]
+            for lbl in zh_labels_list:
+                if _LABEL_TO_GROUP.get(lbl, "") == gid:
+                    expanded.add(lbl)
+        mask = np.array([lbl in expanded for lbl in zh_labels_list])
+    else:
+        mask = np.array([_LABEL_TO_GROUP.get(lbl, "") == winning_group for lbl in zh_labels_list])
+
     sub_labels = [zh_labels_list[i] for i in range(len(zh_labels_list)) if mask[i]]
     sub_logits = zh_logit_vals[mask]
 
@@ -830,6 +896,7 @@ async def classify_image(
             global last_capture_image
             with _hw_lock:
                 last_capture_image = image_data
+            await _ws_broadcast_frame(image_data)
             _mark_hardware_online(
                 ip_address=ip,
                 device_id="ESP32-S3",
@@ -852,7 +919,15 @@ async def classify_image(
         # to avoid queuing behind slow cloud vision API calls
         if source == "esp32" and classify_model == "clip":
             loop = asyncio.get_running_loop()
-            result_data = await loop.run_in_executor(_esp32_executor, _classify_clip, image_data)
+            # P4-14: Wrap blocking inference with a timeout to prevent executor thread stalling
+            try:
+                result_data = await asyncio.wait_for(
+                    loop.run_in_executor(_esp32_executor, _classify_clip, image_data),
+                    timeout=5.0
+                )
+            except asyncio.TimeoutError:
+                logger.error("[classify] ESP32 CLIP inference timed out (>30s)")
+                raise HTTPException(status_code=504, detail="Inference timed out — model may be overloaded")
             with _metrics_lock:
                 runtime_metrics["inference"]["classify_count"] += 1
         else:
@@ -913,6 +988,10 @@ async def classify_image(
             tm = trigger_mode or trigger_config["mode"]
         if background_tasks:
             background_tasks.add_task(_add_history, "classify", result_data, image_data, tm)
+
+        # Push real-time result via SSE for ESP32 captures
+        if source == "esp32":
+            await _sse_notify("new_result", result_data)
 
         return {
             "success": True,
@@ -1240,6 +1319,7 @@ async def hardware_capture(
             trig_mode = trigger_config["mode"]
         with _hw_lock:
             last_capture_image = image_data
+        await _ws_broadcast_frame(image_data)
 
         hw_data = {
             "source": "hardware",
@@ -1257,6 +1337,67 @@ async def hardware_capture(
     except Exception as e:
         logger.error(f"[硬件错误] {str(e)}\n{traceback.format_exc()}")
         raise HTTPException(status_code=500, detail=f"硬件上传失败：{str(e)}")
+
+
+@app.post("/trigger/classify")
+async def trigger_manual_classify():
+    """手动触发分类：使用最新硬件图像运行识别。"""
+    with _hw_lock:
+        img = last_capture_image
+    if img is None:
+        raise HTTPException(status_code=400, detail="No hardware image available yet")
+
+    if not _models_ready:
+        raise HTTPException(status_code=503, detail="Models still loading")
+
+    try:
+        loop = asyncio.get_running_loop()
+        result_data = await asyncio.wait_for(
+            loop.run_in_executor(_esp32_executor, _classify_clip, img),
+            timeout=10.0
+        )
+        with _metrics_lock:
+            runtime_metrics["inference"]["classify_count"] += 1
+        return {
+            "success": True,
+            "result": result_data,
+            "message": f"识别结果：{result_data['item_label_zh']} 置信度：{result_data['confidence'] * 100:.1f}%"
+        }
+    except asyncio.TimeoutError:
+        raise HTTPException(status_code=504, detail="Inference timed out")
+    except Exception as e:
+        logger.error(f"[trigger/classify] error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.websocket("/ws/video")
+async def websocket_video(websocket: WebSocket):
+    """WebSocket endpoint: streams latest hardware JPEG frames to connected browsers."""
+    await websocket.accept()
+    queue = asyncio.Queue(maxsize=20)
+    _ws_frame_queues.append(queue)
+
+    # Send latest frame immediately
+    with _hw_lock:
+        img = last_capture_image
+    if img:
+        await websocket.send_bytes(img)
+
+    try:
+        while True:
+            try:
+                frame = await asyncio.wait_for(queue.get(), timeout=8.0)
+                await websocket.send_bytes(frame)
+            except asyncio.TimeoutError:
+                # Send a ping frame to keep connection alive
+                try:
+                    await websocket.send_json({"type": "ping"})
+                except Exception:
+                    break
+    except WebSocketDisconnect:
+        pass
+    finally:
+        _ws_frame_queues.remove(queue)
 
 
 @app.get("/hardware/heartbeat")

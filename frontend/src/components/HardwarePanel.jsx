@@ -1,12 +1,21 @@
-import { memo, useState, useEffect, useRef } from 'react'
+import { memo, useState, useEffect, useRef, useCallback } from 'react'
 import { motion } from 'framer-motion'
 import { Cpu, Camera, ClockCounterClockwise, WifiHigh, Info, ImageSquare, Lightning, Ruler, Timer, Check } from '@phosphor-icons/react'
 import { getHardwareImageUrl, getTriggerConfig, setTriggerConfig } from '../api'
+
+const WS_URL = `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.host}/ws/video`
 
 const HardwarePanel = memo(function HardwarePanel({ status, loading, captureEventKey, visible }) {
   const [imgKey, setImgKey] = useState(0)
   const prevCaptureCount = useRef(null)
   const [imgError, setImgError] = useState(false)
+  const canvasRef = useRef(null)
+  const wsRef = useRef(null)
+  const reconnectTimer = useRef(null)
+
+  // 实时/快照切换
+  const [liveMode, setLiveMode] = useState(true)
+  const [wsConnected, setWsConnected] = useState(false)
 
   // 触发配置
   const [trigMin, setTrigMin] = useState(30)
@@ -41,7 +50,6 @@ const HardwarePanel = memo(function HardwarePanel({ status, loading, captureEven
       const res = await setTriggerConfig({
         mode: 'distance',
         distance_min: Number(trigMin),
-        distance_min: Number(trigMin),
         distance_max: Number(trigMax),
         cooldown_ms: Number(trigCooldown),
         trigger_interval_ms: Number(trigInterval)
@@ -74,6 +82,59 @@ const HardwarePanel = memo(function HardwarePanel({ status, loading, captureEven
       prevCaptureCount.current = status.capture_count
     }
   }, [status])
+
+  // ── WebSocket 实时视频 ──
+  const connectWs = useCallback(() => {
+    if (wsRef.current) wsRef.current.close()
+    const ws = new WebSocket(WS_URL)
+    ws.binaryType = 'blob'
+    wsRef.current = ws
+
+    ws.onopen = () => setWsConnected(true)
+
+    ws.onmessage = (e) => {
+      if (e.data instanceof Blob && canvasRef.current) {
+        const reader = new FileReader()
+        reader.onload = () => {
+          const img = new Image()
+          img.onload = () => {
+            const canvas = canvasRef.current
+            if (!canvas) return
+            canvas.width = img.width
+            canvas.height = img.height
+            const ctx = canvas.getContext('2d')
+            ctx.drawImage(img, 0, 0)
+          }
+          img.src = reader.result
+        }
+        reader.readAsDataURL(e.data)
+      }
+    }
+
+    ws.onclose = () => {
+      setWsConnected(false)
+      reconnectTimer.current = setTimeout(connectWs, 3000)
+    }
+
+    ws.onerror = () => ws.close()
+  }, [])
+
+  // 挂载 / 可见性变化时控制 WS 连接
+  useEffect(() => {
+    if (visible && liveMode) {
+      connectWs()
+    } else {
+      clearTimeout(reconnectTimer.current)
+      if (wsRef.current) wsRef.current.close()
+      wsRef.current = null
+      setWsConnected(false)
+    }
+    return () => {
+      clearTimeout(reconnectTimer.current)
+      if (wsRef.current) wsRef.current.close()
+      wsRef.current = null
+    }
+  }, [visible, liveMode, connectWs])
 
   const online = status?.online
   const imageUrl = getHardwareImageUrl()
@@ -161,6 +222,102 @@ const HardwarePanel = memo(function HardwarePanel({ status, loading, captureEven
           </div>
           <p className="text-lg font-bold text-zinc-800">{status?.firmware_version || '—'}</p>
           <p className="text-xs text-zinc-400 mt-0.5">{status?.device_id || 'ESP32-S3'}</p>
+        </div>
+      </div>
+
+      {/* ====== 采集图像 — 实时视频 / 快照 ====== */}
+      <div className="mb-5">
+        {/* 视图切换 */}
+        <div className="flex items-center justify-between mb-2">
+          <div className="flex items-center gap-1.5 rounded-lg bg-zinc-100 p-0.5">
+            <button
+              onClick={() => setLiveMode(true)}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
+                liveMode ? 'bg-white text-indigo-700 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'
+              }`}
+            >
+              <Camera weight="bold" className="w-3.5 h-3.5 inline mr-1" />
+              实时画面
+            </button>
+            <button
+              onClick={() => setLiveMode(false)}
+              className={`px-3 py-1.5 rounded-md text-xs font-semibold transition-all ${
+                !liveMode ? 'bg-white text-zinc-700 shadow-sm' : 'text-zinc-500 hover:text-zinc-700'
+              }`}
+            >
+              <ImageSquare weight="bold" className="w-3.5 h-3.5 inline mr-1" />
+              最新采集
+            </button>
+          </div>
+          {liveMode && (
+            <span className={`flex items-center gap-1.5 text-xs font-medium ${
+              wsConnected ? 'text-emerald-600' : 'text-zinc-400'
+            }`}>
+              <span className={`w-1.5 h-1.5 rounded-full ${wsConnected ? 'bg-emerald-500 animate-pulse' : 'bg-zinc-300'}`} />
+              {wsConnected ? '实时' : '连接中'}
+            </span>
+          )}
+        </div>
+
+        {/* 图像区域 */}
+        <div className="relative rounded-2xl overflow-hidden bg-zinc-100 aspect-video border border-zinc-100">
+          {liveMode ? (
+            /* WebSocket 实时视频 */
+            <>
+              <canvas
+                ref={canvasRef}
+                className={`w-full h-full object-contain ${wsConnected ? '' : 'hidden'}`}
+              />
+              {!wsConnected && (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-gradient-to-br from-zinc-50 to-zinc-100">
+                  <div className="w-16 h-16 rounded-2xl bg-white flex items-center justify-center shadow-sm">
+                    <Camera weight="light" className="w-8 h-8 text-zinc-300" />
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm font-medium text-zinc-400">连接实时视频...</p>
+                    <p className="text-xs text-zinc-300 mt-1">等待摄像头画面</p>
+                  </div>
+                </div>
+              )}
+              {wsConnected && (
+                <div className="absolute top-3 left-3 px-2.5 py-1 rounded-full bg-black/40 backdrop-blur-sm text-white/90 text-xs font-medium">
+                  实时画面
+                </div>
+              )}
+            </>
+          ) : (
+            /* 静态快照（原逻辑） */
+            <>
+              {online && !imgError ? (
+                <img
+                  key={imgKey}
+                  src={`${imageUrl}?t=${imgKey}`}
+                  alt="硬件采集图像"
+                  className="w-full h-full object-cover"
+                  onError={() => setImgError(true)}
+                />
+              ) : (
+                <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-gradient-to-br from-zinc-50 to-zinc-100">
+                  <div className="w-16 h-16 rounded-2xl bg-white flex items-center justify-center shadow-sm">
+                    {online ? <ImageSquare weight="light" className="w-8 h-8 text-zinc-300" /> : <Cpu weight="light" className="w-8 h-8 text-zinc-300" />}
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm font-medium text-zinc-400">
+                      {online ? '等待新图像...' : '设备离线 — 等待 ESP32-S3 连接'}
+                    </p>
+                    <p className="text-xs text-zinc-300 mt-1">
+                      {online ? '设备将自动检测距离触发采集' : '请检查设备电源与网络连接'}
+                    </p>
+                  </div>
+                </div>
+              )}
+              {online && !imgError && (
+                <div className="absolute top-3 left-3 px-3 py-1.5 rounded-full bg-black/40 backdrop-blur-sm text-white text-xs font-medium">
+                  最新采集
+                </div>
+              )}
+            </>
+          )}
         </div>
       </div>
 
@@ -274,43 +431,11 @@ const HardwarePanel = memo(function HardwarePanel({ status, loading, captureEven
         </div>
       </div>
 
-      {/* 采集图像 — 大图展示 */}
-      <div className="relative rounded-2xl overflow-hidden bg-zinc-100 aspect-video mb-3 border border-zinc-100">
-        {online && !imgError ? (
-          <img
-            key={imgKey}
-            src={`${imageUrl}?t=${imgKey}`}
-            alt="硬件采集图像"
-            className="w-full h-full object-cover"
-            onError={() => setImgError(true)}
-          />
-        ) : (
-          <div className="absolute inset-0 flex flex-col items-center justify-center gap-3 bg-gradient-to-br from-zinc-50 to-zinc-100">
-            <div className="w-16 h-16 rounded-2xl bg-white flex items-center justify-center shadow-sm">
-              {online ? <ImageSquare weight="light" className="w-8 h-8 text-zinc-300" /> : <Cpu weight="light" className="w-8 h-8 text-zinc-300" />}
-            </div>
-            <div className="text-center">
-              <p className="text-sm font-medium text-zinc-400">
-                {online ? '等待新图像...' : '设备离线 — 等待 ESP32-S3 连接'}
-              </p>
-              <p className="text-xs text-zinc-300 mt-1">
-                {online ? '设备将自动检测距离触发采集' : '请检查设备电源与网络连接'}
-              </p>
-            </div>
-          </div>
-        )}
-        {online && !imgError && (
-          <div className="absolute top-3 left-3 px-3 py-1.5 rounded-full bg-black/40 backdrop-blur-sm text-white text-xs font-medium">
-            最新采集
-          </div>
-        )}
-      </div>
-
       {/* 底部提示 */}
       <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-indigo-50/50">
         <Lightning weight="fill" className="w-3.5 h-3.5 text-indigo-400" />
         <p className="text-xs text-indigo-500 font-medium">
-          硬件状态每 6 秒自动刷新 · TOF 距离自动触发 · ESP32 每 30 秒同步配置
+          实时视频 · TOF 距离自动触发 · WebSocket 协议
         </p>
       </div>
     </motion.div>
