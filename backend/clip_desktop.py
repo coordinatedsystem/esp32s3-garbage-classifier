@@ -11,21 +11,17 @@ import numpy as np
 # 左：CLIP模型用【最优英文提示词】（覆盖大类特征，识别率拉满）
 # 右：用户/老师看到的【中文大类名称】（简洁直观）
 LABEL_MAP = {
-    # 👉 文具大类（核心测试物品）
-    "a common stationery pen": "笔",
-    "a book for study": "书本",
-    "an eraser for writing": "橡皮",
-    "a sheet of white paper": "纸张",
-    "a student notebook": "笔记本",
-    # 👉 日常容器/垃圾大类
-    "a plastic beverage bottle": "塑料瓶",
-    "a glass or ceramic cup": "杯子",
-    # 👉 电子/日常物品
-    "a mobile phone": "手机",
-    "a computer mouse": "鼠标",
-    "a pair of glasses": "眼镜",
-    # 👉 纸制品垃圾
-    "a small cardboard box": "纸盒子"
+    "a photo of a pen or pencil, writing instrument": "笔",
+    "a photo of a book with a cover": "书本",
+    "a photo of an eraser": "橡皮",
+    "a photo of a sheet of paper, blank": "纸张",
+    "a photo of a notebook": "笔记本",
+    "a photo of a clear plastic bottle": "塑料瓶",
+    "a photo of a glass drinking cup": "杯子",
+    "a photo of a smartphone": "手机",
+    "a photo of a computer mouse": "鼠标",
+    "a photo of a pair of eyeglasses": "眼镜",
+    "a photo of a small cardboard box": "纸盒子"
 }
 
 # 自动提取提示词和中文标签

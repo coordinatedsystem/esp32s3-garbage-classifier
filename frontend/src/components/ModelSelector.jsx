@@ -85,7 +85,7 @@ const ModelSelector = memo(function ModelSelector({ mode, setMode, disabled, vis
       custom: ''
     }
     setConfigForm({
-      api_key: '',
+      api_key: providerModel?.api_key || '',
       api_base: providerModel?.api_base || defaults[provider] || '',
       model: providerModel?.model || ''
     })

@@ -39,8 +39,10 @@ export default function App() {
   const [isLoading, setIsLoading] = useState(false)
   const [error, setError] = useState(null)
   const [historyKey, setHistoryKey] = useState(0)
-  const [activeTab, setActiveTab] = useState('hardware')
+  const [activeTab, setActiveTab] = useState('trigger')
   const [captureEventKey, setCaptureEventKey] = useState(0)
+  const [esp32Result, setEsp32Result] = useState(null)
+  const [esp32ImageKey, setEsp32ImageKey] = useState(0)
 
   // Quality
   const [quality, setQuality] = useState(85)
@@ -55,7 +57,7 @@ export default function App() {
   const fetchMetrics = useCallback(() => getRuntimeMetrics(), [])
   const { data: metrics } = usePolling(fetchMetrics, { interval: 10000 })
   const fetchHwStatus = useCallback(() => getHardwareStatus(), [])
-  const { data: hwStatus, loading: hwLoading, setData: setHwStatus } = usePolling(fetchHwStatus, { interval: 30000 })
+  const { data: hwStatus, loading: hwLoading, setData: setHwStatus } = usePolling(fetchHwStatus, { interval: 60000 })
 
   // Called by child components after saving config → mark pending
   const handleConfigChange = useCallback(() => {
@@ -107,6 +109,14 @@ export default function App() {
     })
     es.addEventListener('new_capture', () => {
       setCaptureEventKey(k => k + 1)
+      setEsp32ImageKey(k => k + 1)
+    })
+    es.addEventListener('new_result', (e) => {
+      try {
+        const data = JSON.parse(e.data)
+        setEsp32Result(data)
+        setHistoryKey(k => k + 1)
+      } catch {}
     })
     return () => es.close()
   }, [setHwStatus])
@@ -130,7 +140,6 @@ export default function App() {
   const hardwareOnline = hwStatus?.online
   const captures = hwStatus?.capture_count || 0
   const activeModel = health?.active_model || 'clip'
-  const triggerMode = health?.trigger_config?.mode || 'button'
   const queueDepth = metrics?.queue_depth ?? 0
   const errorRatePct = metrics?.error_rate !== undefined ? (metrics.error_rate * 100).toFixed(1) : '—'
 

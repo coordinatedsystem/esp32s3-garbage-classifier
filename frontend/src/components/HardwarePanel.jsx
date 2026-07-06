@@ -8,6 +8,13 @@ const HardwarePanel = memo(function HardwarePanel({ status, loading, captureEven
   const [imgKey, setImgKey] = useState(0)
   const prevCaptureCount = useRef(null)
   const [imgError, setImgError] = useState(false)
+  const canvasRef = useRef(null)
+  const wsRef = useRef(null)
+  const reconnectTimer = useRef(null)
+
+  // 实时/快照切换
+  const [liveMode, setLiveMode] = useState(true)
+  const [wsConnected, setWsConnected] = useState(false)
 
   // 触发配置 state
   const [trigMode, setTrigMode] = useState('button')
@@ -63,7 +70,7 @@ const HardwarePanel = memo(function HardwarePanel({ status, loading, captureEven
     setTrigMsg('')
     try {
       const res = await setTriggerConfig({
-        mode: trigMode,
+        mode: 'distance',
         distance_min: Number(trigMin),
         distance_max: Number(trigMax),
         cooldown_ms: Number(trigCooldown),
@@ -121,6 +128,59 @@ const HardwarePanel = memo(function HardwarePanel({ status, loading, captureEven
       prevCaptureCount.current = status.capture_count
     }
   }, [status])
+
+  // ── WebSocket 实时视频 ──
+  const connectWs = useCallback(() => {
+    if (wsRef.current) wsRef.current.close()
+    const ws = new WebSocket(WS_URL)
+    ws.binaryType = 'blob'
+    wsRef.current = ws
+
+    ws.onopen = () => setWsConnected(true)
+
+    ws.onmessage = (e) => {
+      if (e.data instanceof Blob && canvasRef.current) {
+        const reader = new FileReader()
+        reader.onload = () => {
+          const img = new Image()
+          img.onload = () => {
+            const canvas = canvasRef.current
+            if (!canvas) return
+            canvas.width = img.width
+            canvas.height = img.height
+            const ctx = canvas.getContext('2d')
+            ctx.drawImage(img, 0, 0)
+          }
+          img.src = reader.result
+        }
+        reader.readAsDataURL(e.data)
+      }
+    }
+
+    ws.onclose = () => {
+      setWsConnected(false)
+      reconnectTimer.current = setTimeout(connectWs, 3000)
+    }
+
+    ws.onerror = () => ws.close()
+  }, [])
+
+  // 挂载 / 可见性变化时控制 WS 连接
+  useEffect(() => {
+    if (visible && liveMode) {
+      connectWs()
+    } else {
+      clearTimeout(reconnectTimer.current)
+      if (wsRef.current) wsRef.current.close()
+      wsRef.current = null
+      setWsConnected(false)
+    }
+    return () => {
+      clearTimeout(reconnectTimer.current)
+      if (wsRef.current) wsRef.current.close()
+      wsRef.current = null
+    }
+  }, [visible, liveMode, connectWs])
 
   const online = status?.online
   const imageUrl = getHardwareImageUrl()
@@ -317,7 +377,7 @@ const HardwarePanel = memo(function HardwarePanel({ status, loading, captureEven
       <div className="flex items-center gap-2 px-3 py-2 rounded-xl bg-indigo-50/50">
         <Lightning weight="fill" className="w-3.5 h-3.5 text-indigo-400" />
         <p className="text-xs text-indigo-500 font-medium">
-          硬件状态每 6 秒自动刷新 · {trigMode === 'distance' ? 'TOF 距离自动触发 · ESP32 每 30 秒同步配置' : '按下设备 BOOT 键触发图像采集与识别'}
+          实时视频 · TOF 距离自动触发 · WebSocket 协议
         </p>
       </div>
     </motion.div>
